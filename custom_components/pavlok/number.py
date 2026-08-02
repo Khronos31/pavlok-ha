@@ -17,11 +17,11 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
     manager: PavlokConnection = hass.data["pavlok"][entry.entry_id]
-    kinds = [STIM_VIBE, STIM_BEEP] + ([STIM_ZAP] if manager.zap_enabled else [])
+    # Zap も常に登録し、既定で無効にする（button.py と同じ理由）
     async_add_entities(
         [
             PavlokStimulusNumber(manager, entry, kind, field)
-            for kind in kinds
+            for kind in (STIM_VIBE, STIM_BEEP, STIM_ZAP)
             for field in ("intensity", "count")
         ]
     )
@@ -48,6 +48,9 @@ class PavlokStimulusNumber(PavlokEntity, NumberEntity, RestoreEntity):
             else (100 if kind == STIM_VIBE else 80 if kind == STIM_BEEP else 50)
         )
         manager.data[f"{kind}_{field}"] = self._value
+        if kind == STIM_ZAP:
+            # Zap の設定も既定では出さない（button.py と対）
+            self._attr_entity_registry_enabled_default = False
 
     @property
     def native_value(self) -> float:

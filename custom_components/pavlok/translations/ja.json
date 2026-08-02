@@ -11,7 +11,7 @@
     "step": {
       "init": {
         "title": "Pavlok オプション",
-        "data": {"zap_enabled": "Zap 操作を有効にする", "keep_connected": "Bluetooth 接続を維持する"}
+        "data": {"keep_connected": "Bluetooth 接続を維持する"}
       }
     }
   }

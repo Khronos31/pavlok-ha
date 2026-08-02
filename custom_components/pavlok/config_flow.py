@@ -89,10 +89,6 @@ class PavlokOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        "zap_enabled",
-                        default=self.config_entry.options.get("zap_enabled", False),
-                    ): cv.boolean,
-                    vol.Required(
                         "keep_connected",
                         default=self.config_entry.options.get("keep_connected", True),
                     ): cv.boolean,

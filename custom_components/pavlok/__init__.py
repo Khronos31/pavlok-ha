@@ -85,8 +85,6 @@ def _register_services(hass: HomeAssistant) -> None:
     async def stimulate(call: ServiceCall) -> None:
         manager = _manager_from_call(hass, call)
         kind = call.data["type"]
-        if kind == STIM_ZAP and not manager.zap_enabled:
-            raise HomeAssistantError("Zap is disabled in Pavlok integration options")
         await manager.async_stimulate(kind, call.data["intensity"], call.data["count"])
 
     async def set_alarm(call: ServiceCall) -> None:

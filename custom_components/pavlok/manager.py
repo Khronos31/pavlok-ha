@@ -132,10 +132,6 @@ class PavlokConnection:
         self._alarm_setter: asyncio.TimerHandle | None = None
         self._known_alarm_records: dict[str, bytes] = {}
 
-    @property
-    def zap_enabled(self) -> bool:
-        """Whether hazardous zap controls were explicitly opted in."""
-        return bool(self.entry.options.get("zap_enabled", False))
 
     @property
     def connect_enabled(self) -> bool:
@@ -347,8 +343,6 @@ class PavlokConnection:
 
     async def async_stimulate(self, kind: str, intensity: int, count: int) -> None:
         """Fire a requested stimulus. This is only called by an explicit HA action."""
-        if kind == STIM_ZAP and not self.zap_enabled:
-            raise HomeAssistantError("Zap is disabled")
         characteristic = {STIM_VIBE: CHR_VIBE, STIM_BEEP: CHR_BEEP, STIM_ZAP: CHR_ZAP}[
             kind
         ]
@@ -365,16 +359,12 @@ class PavlokConnection:
             "beep": btn_action_stim(STIM_BEEP),
             "zap": btn_action_stim(STIM_ZAP),
         }[action]
-        if action == "zap" and not self.zap_enabled:
-            raise HomeAssistantError("Zap is disabled")
         await self._write(CHR_CMD7, bytes([0x02, slot]) + action_bytes)
 
     async def async_start_timer(
         self, seconds: int, stimulus: str, interval: int
     ) -> None:
         """Start the device-side timer (an explicit service action only)."""
-        if stimulus == STIM_ZAP and not self.zap_enabled:
-            raise HomeAssistantError("Zap is disabled")
         duration = varlen_encode(seconds)
         body = (
             bytes([TIMER_KIND_TIMER, 0xF5, len(duration)])
@@ -567,8 +557,6 @@ class PavlokConnection:
             (values.get("zap"), STIM_ZAP),
         ):
             if enabled:
-                if kind == STIM_ZAP and not self.zap_enabled:
-                    raise HomeAssistantError("Zap is disabled")
                 tag = {STIM_VIBE: "VI", STIM_BEEP: "BE", STIM_ZAP: "ZA"}[kind]
                 body += tlv(
                     tag,

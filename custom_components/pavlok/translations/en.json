@@ -11,7 +11,7 @@
     "step": {
       "init": {
         "title": "Pavlok options",
-        "data": {"zap_enabled": "Enable Zap controls", "keep_connected": "Keep Bluetooth connection"}
+        "data": {"keep_connected": "Keep Bluetooth connection"}
       }
     }
   }

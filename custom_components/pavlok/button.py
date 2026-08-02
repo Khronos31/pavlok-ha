@@ -15,13 +15,17 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
     manager: PavlokConnection = hass.data["pavlok"][entry.entry_id]
-    entities = [
-        PavlokStimulusButton(manager, entry, STIM_VIBE),
-        PavlokStimulusButton(manager, entry, STIM_BEEP),
-    ]
-    if manager.zap_enabled:
-        entities.append(PavlokStimulusButton(manager, entry, STIM_ZAP))
-    async_add_entities(entities)
+    # Zap のエンティティも**常に登録する**が、既定では無効にしておく
+    # （HAの作法。デバイスページに「無効なエンティティ」として現れ、
+    #  ユーザーが明示的に有効化できる。条件付きで生成しないと、設定を
+    #  切り替えるたびにエンティティが消えて履歴や自動化の参照が壊れる）
+    async_add_entities(
+        [
+            PavlokStimulusButton(manager, entry, STIM_VIBE),
+            PavlokStimulusButton(manager, entry, STIM_BEEP),
+            PavlokStimulusButton(manager, entry, STIM_ZAP),
+        ]
+    )
 
 
 class PavlokStimulusButton(PavlokEntity, ButtonEntity):
@@ -33,6 +37,9 @@ class PavlokStimulusButton(PavlokEntity, ButtonEntity):
         super().__init__(manager, entry, kind)
         self._attr_name = kind.capitalize()
         self._kind = kind
+        if kind == STIM_ZAP:
+            # 体に電気刺激を送るので、利用者が明示的に有効化するまで出さない
+            self._attr_entity_registry_enabled_default = False
 
     async def async_press(self) -> None:
         await self.manager.async_stimulate(
