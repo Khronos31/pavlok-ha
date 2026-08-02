@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -17,7 +16,8 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
     manager: PavlokConnection = hass.data["pavlok"][entry.entry_id]
-    # Zap も常に登録し、既定で無効にする（button.py と同じ理由）
+    # 強度・回数はデバイス設定ではなく一発ごとのパラメータなので、
+    # EntityCategory を付けずダッシュボードに出す。安全側の門は button.py の Zap 一枚。
     async_add_entities(
         [
             PavlokStimulusNumber(manager, entry, kind, field)
@@ -30,7 +30,6 @@ async def async_setup_entry(
 class PavlokStimulusNumber(PavlokEntity, NumberEntity, RestoreEntity):
     """Persist a control preference locally without touching read-only device settings."""
 
-    _attr_entity_category = EntityCategory.CONFIG
     _attr_mode = NumberMode.BOX
 
     def __init__(
@@ -48,9 +47,6 @@ class PavlokStimulusNumber(PavlokEntity, NumberEntity, RestoreEntity):
             else (100 if kind == STIM_VIBE else 80 if kind == STIM_BEEP else 50)
         )
         manager.data[f"{kind}_{field}"] = self._value
-        if kind == STIM_ZAP:
-            # Zap の設定も既定では出さない（button.py と対）
-            self._attr_entity_registry_enabled_default = False
 
     @property
     def native_value(self) -> float:
