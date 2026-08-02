@@ -218,23 +218,51 @@ def iter_blocks(data: bytes):
         p += 12 + ln
 
 
-# Sleep record inside a coarse (type 3) block body:
-#   21 09 <u16> <start_unix u32> <duration_sec u16> <u8>
+# Sleep session record inside a coarse (type 3) block body. Length is VARIABLE
+# and the duration field width depends on it (verified against the official app
+# on 2026-08-03 — all 6 sessions of one night matched exactly):
+#
+#   21 <len> <u16 ?> <start_unix u32> <duration> [tail]
+#     len 7  -> duration is 1 byte  (seconds).  short "tried to sleep" sessions
+#     len >=9 -> duration is u16 LE (seconds), followed by `len-8` tail bytes
+#
+# A full night produced len=94, i.e. an 86-byte tail that is NOT decoded yet.
+# Ground truth for that night (app): 23:42:25 -> 07:01:09, 7h18m; stages
+# Awake 45m / REM 3h15m / Light 3h15m / Deep 15m (all quantised to 15 min).
+# The tail is where the stage breakdown is expected to live.
 SLEEP_RECORD_TAG = 0x21
+_UNIX_MIN = 1_700_000_000
+_UNIX_MAX = 2_000_000_000
 
 
 def find_sleep_records(body: bytes):
-    """Yield (start_unix, duration_sec) sleep records found in a block body."""
+    """Yield ``(start_unix, duration_seconds, tail)`` for each sleep session.
+
+    ``tail`` is the not-yet-decoded remainder (empty for short sessions).
+    """
     i = 0
     n = len(body)
-    while i + 11 <= n:
-        if body[i] == SLEEP_RECORD_TAG and body[i + 1] == 0x09:
-            start_unix = struct.unpack_from("<I", body, i + 4)[0]
-            duration = struct.unpack_from("<H", body, i + 8)[0]
-            # sanity: plausible 2026-era unix time
-            if 1_700_000_000 <= start_unix <= 2_000_000_000:
-                yield (start_unix, duration)
-        i += 1
+    while i + 2 <= n:
+        if body[i] != SLEEP_RECORD_TAG:
+            i += 1
+            continue
+        ln = body[i + 1]
+        if not (7 <= ln <= 200) or i + 2 + ln > n:
+            i += 1
+            continue
+        payload = body[i + 2:i + 2 + ln]
+        start_unix = struct.unpack_from("<I", payload, 2)[0]
+        if not (_UNIX_MIN <= start_unix <= _UNIX_MAX):
+            i += 1
+            continue
+        if ln == 7:
+            duration = payload[6]
+            tail = b""
+        else:
+            duration = struct.unpack_from("<H", payload, 6)[0]
+            tail = bytes(payload[8:])
+        yield (start_unix, duration, tail)
+        i += 2 + ln
 
 
 # ==========================================================================
