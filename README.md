@@ -34,7 +34,7 @@ For that reason:
 | Area | What you get |
 | --- | --- |
 | Stimulus | `button.pavlok_vibe` / `_beep` / `_zap` (zap off by default) + `pavlok.stimulate` service (choose type, intensity, count — the app can only send one repeat; BLE can send many) |
-| Sensors | activity (per-second & cumulative), steps, battery, RSSI, connection, last sleep (bed/wake/duration), next alarm, timer/stopwatch state |
+| Sensors | activity (per-second & cumulative), steps, battery, RSSI, connection, last sleep (bed time / wake time / duration), next alarm, timer/stopwatch state |
 | Events | `event.pavlok_button` — top/mid/bottom × short/long, as automation triggers |
 | Alarms | read the on-device alarm list; set/delete alarms (survive phone & HA being off) via services; a `time` + `switch` pair for your usual wake alarm |
 | Buttons | assign the three physical buttons (`select` per slot) |
@@ -57,12 +57,28 @@ For that reason:
    `Pavlok-3-XXXX`). Otherwise add it via *Settings → Devices & Services → Add
    Integration → Pavlok*.
 
+## Notes on the data
+
+Values reported by this integration are **the same values the official Pavlok
+app shows** — they are read from the device's own stored records, not
+recalculated here. This was verified against the app for a full night (all six
+sleep sessions matched exactly, as did the daily step total).
+
+Two things are deliberately *not* exposed:
+
+- **Sleep score** — the app computes it rather than storing it on the device, so
+  there is nothing to read.
+- **Sleep stages** (REM / light / deep) — the per-session record contains a
+  trailing block that is not decoded yet.
+
+Hand detection is not exposed either; the setting can be toggled but the feature
+did not behave as expected during testing.
+
 ## Status
 
-Early release. The protocol is fully mapped for stimulus, time, history, alarms,
-timers, button assignment and events. Sleep *stages* (REM/light/deep) are not
-decoded yet. Hand-detection is not exposed (the device feature itself is
-unreliable). See the source for details.
+Early release. The protocol is mapped for stimulus, time sync, history, alarms,
+timers, button assignment and button events. Not yet verified on a live device:
+alarm writes and timer start. See the source for details.
 
 ## License
 
