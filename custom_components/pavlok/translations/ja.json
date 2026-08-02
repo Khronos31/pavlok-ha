@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {"title": "Pavlok を追加", "data": {"address": "Bluetooth アドレス"}},
+      "confirm": {"title": "Pavlok を追加", "description": "{name} を設定しますか？"}
+    },
+    "error": {"not_pavlok": "検出された機器は Pavlok 3 ではありません。"},
+    "abort": {"not_pavlok": "検出された機器は Pavlok 3 ではありません。"}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Pavlok オプション",
+        "data": {"zap_enabled": "Zap 操作を有効にする", "keep_connected": "Bluetooth 接続を維持する"}
+      }
+    }
+  }
+}

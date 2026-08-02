@@ -1,0 +1,118 @@
+stimulate:
+  name: Stimulate
+  description: Fire a Pavlok vibration, beep, or explicitly enabled zap.
+  fields:
+    entry_id:
+      selector:
+        config_entry:
+          integration: pavlok
+    type:
+      required: true
+      selector:
+        select:
+          options: [vibe, beep, zap]
+    intensity:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+    count:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 127
+set_alarm:
+  name: Set alarm
+  description: Add an alarm after reading and preserving the device alarm list.
+  fields:
+    time:
+      required: true
+      selector:
+        time:
+    days:
+      selector:
+        select:
+          multiple: true
+          options: [sun, mon, tue, wed, thu, fri, sat]
+    name:
+      selector:
+        text:
+    enabled:
+      selector:
+        boolean:
+    vibe:
+      selector:
+        boolean:
+    vibe_intensity:
+      selector:
+        number:
+          min: 0
+          max: 100
+    vibe_count:
+      selector:
+        number:
+          min: 1
+          max: 127
+    beep:
+      selector:
+        boolean:
+    beep_intensity:
+      selector:
+        number:
+          min: 0
+          max: 100
+    beep_count:
+      selector:
+        number:
+          min: 1
+          max: 127
+    zap:
+      selector:
+        boolean:
+    zap_intensity:
+      selector:
+        number:
+          min: 0
+          max: 100
+    zap_count:
+      selector:
+        number:
+          min: 1
+          max: 127
+    unlock:
+      selector:
+        select:
+          options: [none, jacks, qr, puzzle]
+delete_alarm:
+  name: Delete alarm
+  description: Remove one alarm and write the remaining device alarm list.
+  fields:
+    id:
+      required: true
+      selector:
+        text:
+start_timer:
+  name: Start timer
+  description: Start a device-side timer with an optional repeating stimulus.
+  fields:
+    seconds:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 604800
+          unit_of_measurement: s
+    stimulus:
+      selector:
+        select:
+          options: [vibe, beep, zap]
+    interval:
+      selector:
+        number:
+          min: 0
+          max: 255
+sync_history:
+  name: Sync history
+  description: Read sleep history and add duration records to Home Assistant statistics.

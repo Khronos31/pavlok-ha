@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {"title": "Add Pavlok", "data": {"address": "Bluetooth address"}},
+      "confirm": {"title": "Add Pavlok", "description": "Set up {name}?"}
+    },
+    "error": {"not_pavlok": "The discovered device is not a Pavlok 3."},
+    "abort": {"not_pavlok": "The discovered device is not a Pavlok 3."}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Pavlok options",
+        "data": {"zap_enabled": "Enable Zap controls", "keep_connected": "Keep Bluetooth connection"}
+      }
+    }
+  }
+}

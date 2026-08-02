@@ -1,0 +1,361 @@
+"""Constants and low-level protocol helpers for the Pavlok 3 (Shock Clock 3).
+
+All values here were reverse-engineered from a real device (2026-08-02) and
+verified against the official app. Getting a byte wrong here is expensive, so
+this module is the single source of truth for the wire format. The higher-level
+integration code should import from here rather than hard-coding bytes.
+
+Protocol summary
+----------------
+Vendor service family: ``156eN000-a300-4fea-897b-86f698d74461``.
+No pairing / bonding / authentication is required to connect, read or write.
+The device silently ignores writes it does not accept (a successful ACK does
+NOT mean the write took effect) and rejects malformed alarm payloads with a
+CRC error, so verify by observing actual behaviour, not by the write result.
+"""
+
+from __future__ import annotations
+
+import struct
+
+DOMAIN = "pavlok"
+
+# Advertised local name. Pavlok advertises no service UUID, so discovery must
+# match on the name. Address is a public/static address (not rotating RPA).
+LOCAL_NAME_PREFIX = "Pavlok-3-"
+
+
+def svc(n: int) -> str:
+    """Return a vendor service UUID for the ``156eN000`` family."""
+    return f"156e{n:04x}-a300-4fea-897b-86f698d74461"
+
+
+def chr16(handle16: int) -> str:
+    """Return a 128-bit UUID for a 16-bit vendor characteristic id."""
+    return f"0000{handle16:04x}-0000-1000-8000-00805f9b34fb"
+
+
+# --- Services -------------------------------------------------------------
+SVC_CMD = svc(0)        # 156e0000: status/command channel (0x0001 battery notify)
+SVC_STIM = svc(0x1000)  # 156e1000: Vibe/Beep/Zap/LED/Time/HD/Button/DAQ
+SVC_DATA = svc(0x2000)  # 156e2000: Time2/Events/Timers/Files/AlarmTime
+SVC_SENSOR = svc(0x4000)
+SVC_ALARM = svc(0x5000)  # 156e5000: A-Ctrl/A-Write/A-Ntfy
+SVC_7000 = svc(0x7000)   # 156e7000: general command channel (NOT DFU). 0x7999 = do not touch
+
+BATTERY_SVC = "0000180f-0000-1000-8000-00805f9b34fb"
+BATTERY_CHR = "00002a19-0000-1000-8000-00805f9b34fb"
+DEVICE_INFO_SVC = "0000180a-0000-1000-8000-00805f9b34fb"
+
+# --- 156e1000 stimulus / settings ----------------------------------------
+CHR_VIBE = chr16(0x1001)   # RW  5 bytes
+CHR_BEEP = chr16(0x1002)   # RW  5 bytes
+CHR_ZAP = chr16(0x1003)    # RWN 2 bytes
+CHR_LED = chr16(0x1004)
+CHR_TIME = chr16(0x1005)   # RW  BCD 8 bytes (see time_bytes)
+CHR_HD = chr16(0x1006)     # hand detection; byte0 bit0 = enabled
+CHR_BUTTON = chr16(0x1007)
+CHR_DAQ = chr16(0x1008)
+
+# --- 156e2000 data --------------------------------------------------------
+CHR_EVENTS = chr16(0x2002)     # notify: activity/steps/button/timer/sleep events
+CHR_TIMERS = chr16(0x2003)
+CHR_FILES = chr16(0x2009)      # history transfer (write command -> notify stream)
+CHR_ALARM_TIME = chr16(0x200a)  # next-alarm cache (BCD-ish, see below)
+
+# --- 156e5000 alarm channel ----------------------------------------------
+CHR_ACTRL = chr16(0x5001)   # mode byte: 0x06 read, 0x01 write-begin, 0x00 commit
+CHR_AWRITE = chr16(0x5002)  # TLV payload in <=20 byte chunks; notify 00000000=ok 02000000=reject
+CHR_ANTFY = chr16(0x5003)
+
+# --- 156e0000 status ------------------------------------------------------
+CHR_STATUS = chr16(0x0001)  # notify ~15s; byte2 = battery %
+
+# --- 156e7000 command channel --------------------------------------------
+CHR_CMD7 = chr16(0x7001)    # timer/stopwatch + button assignment commands
+
+# The default alarm profile name used by the app. A-Ctrl carries this string.
+ALARM_PROFILE = b"Single 1"
+
+
+# ==========================================================================
+# Stimulus  (0x1001 Vibe / 0x1002 Beep / 0x1003 Zap)
+# ==========================================================================
+# First byte = fire-bit (0x80) | count (1..127). Writes without bit7 are ignored
+# (they do NOT change the stored value either). Firing does NOT change the
+# stored setting. Intensity 0..100.
+#   Vibe/Beep: [0x80|count, 0x0c, intensity, 0x16, 0x16]   (5 bytes)
+#   Zap:       [0x80|count, intensity]                     (2 bytes)
+# Byte 1 (0x0c) is an unconfirmed waveform/duration field. The stored quick-remote
+# defaults differ per type (vibe 0x0c, beep 0x06), but the official app always
+# sends 0x0c when firing with an explicit intensity — observed on both Vibe and
+# Beep characteristics — so we do the same. Length must match exactly or the
+# device silently ignores the write.
+STIM_VIBE = "vibe"
+STIM_BEEP = "beep"
+STIM_ZAP = "zap"
+
+
+def stimulus_bytes(kind: str, intensity: int, count: int) -> bytes:
+    """Build a fire-now payload. Length differs per kind or the write is ignored."""
+    count = max(1, min(127, int(count)))
+    intensity = max(0, min(100, int(intensity)))
+    head = 0x80 | count
+    if kind == STIM_ZAP:
+        return bytes([head, intensity])
+    return bytes([head, 0x0C, intensity, 0x16, 0x16])
+
+
+# ==========================================================================
+# Time  (0x1005)  BCD 8 bytes: [sec, min, hour, day, weekday, month, year, tz]
+# ==========================================================================
+# weekday: 0=Sunday. tz in 15-minute units (0x24 = 36 => +540 min => UTC+9).
+
+
+def _bcd(n: int) -> int:
+    return ((n // 10) << 4) | (n % 10)
+
+
+def time_bytes(dt, tz_minutes: int) -> bytes:
+    """Encode a local datetime for 0x1005. ``dt`` is a naive local datetime."""
+    return bytes([
+        _bcd(dt.second), _bcd(dt.minute), _bcd(dt.hour),
+        _bcd(dt.day), _bcd(dt.weekday_sun0()) if hasattr(dt, "weekday_sun0")
+        else _bcd((dt.weekday() + 1) % 7),
+        _bcd(dt.month), _bcd(dt.year % 100),
+        tz_minutes // 15,
+    ])
+
+
+# ==========================================================================
+# Events  (0x2002 notify)  first byte = event type
+# ==========================================================================
+EVT_ACTIVITY = 0x02   # 11 bytes: [02, cum_activity u32 @1, time u16 @5, ...]
+EVT_STEPS = 0x03      # [03, cumulative_steps u32 LE]
+EVT_BUTTON = 0x05     # [05, (button_mask<<4)|press]  btn 0x10 top /0x20 mid /0x40 bottom; press 1 short 3 long
+EVT_TIMER = 0x0D      # 0d idle | 0d KIND 90 <elapsed u24 LE> 00 ; KIND 01=stopwatch 02=timer
+EVT_SLEEP = 0x04  # 04 01 02 = sleep tracking ON, 04 01 00 = OFF
+
+BUTTON_TOP = 0x10
+BUTTON_MID = 0x20
+BUTTON_BOTTOM = 0x40
+PRESS_SHORT = 1
+PRESS_LONG = 3
+
+
+def parse_activity(payload: bytes) -> int | None:
+    """Cumulative activity counter (increments only while moving)."""
+    if len(payload) >= 5 and payload[0] == EVT_ACTIVITY:
+        return struct.unpack_from("<I", payload, 1)[0]
+    return None
+
+
+def parse_steps(payload: bytes) -> int | None:
+    if len(payload) >= 5 and payload[0] == EVT_STEPS:
+        return struct.unpack_from("<I", payload, 1)[0]
+    return None
+
+
+def parse_button(payload: bytes):
+    """Return (button_mask, press_type) or None."""
+    if len(payload) >= 2 and payload[0] == EVT_BUTTON:
+        b = payload[1]
+        return (b & 0xF0, b & 0x0F)
+    return None
+
+
+def parse_timer(payload: bytes):
+    """Return (kind, elapsed_seconds) or ('idle', 0). kind: 'stopwatch'|'timer'|'idle'."""
+    if not payload or payload[0] != EVT_TIMER:
+        return None
+    if len(payload) < 7:
+        return ("idle", 0)
+    kind = {1: "stopwatch", 2: "timer"}.get(payload[1], "unknown")
+    elapsed = payload[3] | (payload[4] << 8) | (payload[5] << 16)
+    return (kind, elapsed)
+
+
+def parse_sleep_flag(payload: bytes) -> bool | None:
+    if len(payload) >= 3 and payload[0] == EVT_SLEEP:
+        return payload[2] == 0x02
+    return None
+
+
+# ==========================================================================
+# History / Files  (0x2009)
+# ==========================================================================
+# Command (9 bytes): [type, start u32 LE, end u32 LE]
+#   type 0x03 or 0x82 (=0x02|0x80). end=0 -> header only. end=0xffffffff -> all.
+# Enable notify on the CCCD, write command, receive notify stream, then unsub.
+# File header (14 bytes): <magic u16><first_index u32><block_count u32><total_bytes u32>
+# Block: <marker u8><type u8><len u16><index u32><start_unix u32> + len body
+#        marker 0x3f = more follows, 0x7f = final block
+FILES_TYPE_COARSE = 0x03   # steps/summary style (contains sleep records)
+FILES_TYPE_FINE = 0x82     # fine-grained (activity); fills ~every 6h
+
+BLOCK_MARK_MORE = 0x3F
+BLOCK_MARK_LAST = 0x7F
+
+
+def files_command(type_: int, start: int = 0, end: int = 0xFFFFFFFF) -> bytes:
+    return struct.pack("<BII", type_, start, end)
+
+
+def parse_file_header(data: bytes):
+    """(magic, first_index, block_count, total_bytes)."""
+    return struct.unpack_from("<HIII", data, 0)
+
+
+def iter_blocks(data: bytes):
+    """Yield (mark, type, index, start_unix, body) for each block after the 14-byte header."""
+    p = 14
+    while p + 12 <= len(data):
+        mark, btype, ln, index, start_unix = struct.unpack_from("<BBHII", data, p)
+        if mark not in (BLOCK_MARK_MORE, BLOCK_MARK_LAST):
+            break
+        body = data[p + 12:p + 12 + ln]
+        yield (mark, btype, index, start_unix, body)
+        p += 12 + ln
+
+
+# Sleep record inside a coarse (type 3) block body:
+#   21 09 <u16> <start_unix u32> <duration_sec u16> <u8>
+SLEEP_RECORD_TAG = 0x21
+
+
+def find_sleep_records(body: bytes):
+    """Yield (start_unix, duration_sec) sleep records found in a block body."""
+    i = 0
+    n = len(body)
+    while i + 11 <= n:
+        if body[i] == SLEEP_RECORD_TAG and body[i + 1] == 0x09:
+            start_unix = struct.unpack_from("<I", body, i + 4)[0]
+            duration = struct.unpack_from("<H", body, i + 8)[0]
+            # sanity: plausible 2026-era unix time
+            if 1_700_000_000 <= start_unix <= 2_000_000_000:
+                yield (start_unix, duration)
+        i += 1
+
+
+# ==========================================================================
+# Alarm  (156e5000, TLV with CRC-16/CCITT-FALSE)
+# ==========================================================================
+# A-Ctrl mode byte: 0x06 read, 0x01 write-begin, 0x00 commit (followed by profile).
+# TLV: 2-char ASCII tag + u16 LE length + body (nested for container tags).
+# Container "AH" holds a 2-byte checksum (its first 2 body bytes) computed as
+# CRC-16/CCITT-FALSE over the ENTIRE AH TLV with those 2 bytes zeroed, stored LE.
+ACTRL_READ = 0x06
+ACTRL_WRITE_BEGIN = 0x01
+ACTRL_COMMIT = 0x00
+
+AWRITE_OK = bytes.fromhex("00000000")
+AWRITE_REJECT = bytes.fromhex("02000000")  # CRC mismatch / malformed
+
+DOW_MON_FIRST = "月火水木金土日"  # for reference; bitmask below is Sunday-based
+# TM 4th byte: bit0=Sun bit1=Mon ... bit6=Sat, bit7=enabled. mask 0 => "no fire day".
+ALARM_ENABLED_BIT = 0x80
+
+# AO (options) bitmask, confirmed 2026-08-02:
+AO_UNLOCK_NONE = 0x01     # dismiss method: none (default)   <- must set one of the 4
+AO_UNLOCK_JACKS = 0x02    # jumping jacks (pairs with JL count)
+AO_UNLOCK_QR = 0x04       # QR code
+AO_UNLOCK_PUZZLE = 0x80   # puzzle/quiz
+AO_LIGHT_SLEEP = 0x08     # "light sleep"
+AO_ESCALATE = 0x20        # escalating alarm (pairs with ES tag)
+AO_SMART = 0x40           # smart alarm (pairs with SM tag)
+# NOTE: AO must contain exactly one unlock method (bit0/1/2/7). AO=0x00 is NOT
+# "no challenge"; use AO_UNLOCK_NONE (0x01). Getting this wrong created an
+# un-dismissable alarm on the real device.
+
+# SN (snooze) bitfield: bit0 = snooze enabled, bit1 = snooze-zap.
+SN_SNOOZE = 0x01
+SN_SNOOZE_ZAP = 0x02
+
+
+def crc16_ccitt_false(data: bytes) -> int:
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def tlv(tag: str, body: bytes) -> bytes:
+    return tag.encode("ascii") + struct.pack("<H", len(body)) + body
+
+
+def seal_alarm_message(ah_body_without_crc: bytes) -> bytes:
+    """Wrap an AH body (already starting with 2 placeholder bytes 00 00 then AP/HA...)
+    into a full AH TLV with a valid CRC in place of the placeholder."""
+    msg = tlv("AH", b"\x00\x00" + ah_body_without_crc)
+    crc = crc16_ccitt_false(msg)  # over whole message, checksum field already 0
+    return msg[:4] + struct.pack("<H", crc) + msg[6:]
+
+
+# ==========================================================================
+# 156e7000 command channel: timer/stopwatch + button assignment
+# ==========================================================================
+# Timer/stopwatch set+start:
+#   22 <len u16 LE> <12=SW|13=timer> f5 <n> <duration varlen> f0 04 <stim> 2a <interval> <80|00>
+# Duration uses the UTF-8-style varlen integer below (NOT protobuf varint).
+# Operation:  13 03 11 02 <op> <kind>   op 11=start 12=reset 13=pause 14=resume ; kind 01=SW 02=timer
+CMD7_HELLO = bytes.fromhex("120d0000000000")  # written by the app right after connect
+STIM_CODE = {STIM_VIBE: 1, STIM_BEEP: 2, STIM_ZAP: 3}
+
+TIMER_KIND_STOPWATCH = 0x12
+TIMER_KIND_TIMER = 0x13
+TIMER_OP_START = 0x11
+TIMER_OP_RESET = 0x12
+TIMER_OP_PAUSE = 0x13
+TIMER_OP_RESUME = 0x14
+
+
+def varlen_encode(v: int) -> bytes:
+    """UTF-8-style length-prefixed integer with per-tier bias (used by timer duration)."""
+    if v < 128:
+        return bytes([v])
+    v -= 128
+    if v < (1 << 14):
+        return bytes([0x80 | (v >> 8), v & 0xFF])
+    v -= (1 << 14)
+    if v < (1 << 21):
+        return bytes([0xC0 | (v >> 16), (v >> 8) & 0xFF, v & 0xFF])
+    v -= (1 << 21)
+    return bytes([0xE0 | (v >> 24), (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF])
+
+
+def varlen_decode(b: bytes) -> int:
+    if b[0] < 0x80:
+        return b[0]
+    if b[0] < 0xC0:
+        return 128 + ((b[0] & 0x3F) << 8) + b[1]
+    if b[0] < 0xE0:
+        return 128 + (1 << 14) + ((b[0] & 0x1F) << 16) + (b[1] << 8) + b[2]
+    return (128 + (1 << 14) + (1 << 21) + ((b[0] & 0x0F) << 24)
+            + (b[1] << 16) + (b[2] << 8) + b[3])
+
+
+# Button assignment: 02 <slot 1..6> <action bytes>
+#   slots: 1 top-short 2 mid-short 3 bottom-short 4 top-long 5 mid-long 6 bottom-long
+#   (mid-long has no stopwatch/timer option in the app UI, but the firmware
+#    accepts them anyway.)
+BTN_SLOT = {
+    ("top", "short"): 1, ("mid", "short"): 2, ("bottom", "short"): 3,
+    ("top", "long"): 4, ("mid", "long"): 5, ("bottom", "long"): 6,
+}
+# Action payloads (append after "02 <slot>"):
+BTN_ACT_STOPWATCH = bytes.fromhex("11021001")
+BTN_ACT_TIMER = bytes.fromhex("11021002")
+BTN_ACT_SLEEP = bytes.fromhex("130102")
+BTN_ACT_DISABLE = bytes.fromhex("ff")
+
+
+def btn_action_stim(kind: str, count: int = 1) -> bytes:
+    """Stimulus button action. First byte is 0x40|count (bit6 = 'assigned to button')."""
+    head = 0x40 | max(1, min(127, count))
+    if kind == STIM_ZAP:
+        return bytes([0x03, head, 0x32])
+    if kind == STIM_BEEP:
+        return bytes([0x02, head, 0x0C, 0x50, 0x16, 0x16])
+    return bytes([0x01, head, 0x0C, 0x64, 0x16, 0x16])  # vibe
