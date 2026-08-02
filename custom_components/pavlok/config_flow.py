@@ -67,17 +67,18 @@ class PavlokConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def async_get_options_flow(config_entry) -> OptionsFlow:
-        return PavlokOptionsFlow(config_entry)
+        return PavlokOptionsFlow()
 
 
 _ADDRESS_SCHEMA = vol.Schema({vol.Required(CONF_ADDRESS): cv.string})
 
 
 class PavlokOptionsFlow(OptionsFlow):
-    """Keep safety-related preferences explicit and per config entry."""
+    """Keep safety-related preferences explicit and per config entry.
 
-    def __init__(self, config_entry) -> None:
-        self.config_entry = config_entry
+    ``config_entry`` is provided by the base class in current Home Assistant;
+    assigning it raises ``AttributeError: property has no setter``.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
