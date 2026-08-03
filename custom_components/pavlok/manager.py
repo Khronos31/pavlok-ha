@@ -85,6 +85,7 @@ from .const import (
     parse_sleep_flag,
     parse_steps,
     parse_timer,
+    truncate_block,
     seal_alarm_message,
     stimulus_bytes,
     time_bytes,
@@ -886,6 +887,7 @@ class PavlokConnection:
         alignment, so a whole-file transfer loses its newest blocks -- exactly the
         ones worth reading.  One block at a time keeps a retry cheap.
         """
+        best = b""
         for _ in range(_BLOCK_ATTEMPTS):
             try:
                 raw = await self._async_read_file(
@@ -893,12 +895,17 @@ class PavlokConnection:
                 )
             except HomeAssistantError:
                 continue
-            if len(raw) <= _FILE_HEADER_BYTES:
+            if len(raw) <= _FILE_HEADER_BYTES + 12:
                 continue
             total = parse_file_header(raw)[3]
-            if len(raw) >= _FILE_HEADER_BYTES + total:
-                return raw[_FILE_HEADER_BYTES : _FILE_HEADER_BYTES + total]
-        return None
+            block = raw[_FILE_HEADER_BYTES : _FILE_HEADER_BYTES + total]
+            if len(block) >= total:
+                return block
+            if len(block) > len(best):
+                best = block
+        # 完全に届かなくても、届いた分の記録は読める。宣言長を実際の長さに直して
+        # おかないと、後続ブロックの走査位置がずれる。
+        return truncate_block(best) if best else None
 
     async def async_sync_history(self) -> None:
         """Fetch coarse history block by block and expose the newest sleep session.
@@ -968,7 +975,11 @@ class PavlokConnection:
             hourly[hour] = hourly.get(hour, 0.0) + duration / 60
         metadata = {
             "source": DOMAIN,
-            "statistic_id": f"{DOMAIN}:{self.entry.entry_id}_sleep_minutes",
+            # 統計IDは entity_id と同じ制限（小文字・数字・アンダースコアのみ）。
+            # entry_id は大文字を含むULIDなので使えない。
+            "statistic_id": (
+                f"{DOMAIN}:{self.address.replace(':', '').lower()}_sleep_minutes"
+            ),
             "name": f"{self.name} sleep duration",
             "unit_of_measurement": "min",
             "has_mean": True,

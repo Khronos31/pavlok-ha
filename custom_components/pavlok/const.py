@@ -228,6 +228,13 @@ def _is_block_header(data: bytes, p: int) -> bool:
     )
 
 
+def truncate_block(block: bytes) -> bytes:
+    """Rewrite a partly received block's length field to match what arrived."""
+    if len(block) < 12:
+        return b""
+    return block[:2] + struct.pack("<H", len(block) - 12) + block[4:]
+
+
 def iter_blocks(data: bytes):
     """Yield (mark, type, index, start_unix, body) for each block after the header.
 
