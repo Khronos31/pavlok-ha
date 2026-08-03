@@ -10,7 +10,7 @@ import asyncio
 import logging
 import struct
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from time import monotonic
 from typing import Any, Final
@@ -453,25 +453,53 @@ class PavlokConnection:
         self._publish()
 
     def _alarm_time_notify(self, _: Any, payload: bytearray) -> None:
-        """Decode the firmware's BCD-style next-alarm clock when it includes date fields."""
+        """Decode the firmware's next-alarm clock.
+
+        The payload carries a time of day only, not a date::
+
+            00 28 19 00 01 02 00
+            秒 分 時          ID      (BCD, same encoding as the 0x1005 clock)
+
+        An all-zero payload means no alarm is pending.  The date has to be derived
+        from the alarm's own weekday mask, which is why the trailing alarm id
+        matters: it selects the record to consult.
+        """
         raw = bytes(payload)
+        if len(raw) < 3 or not any(raw):
+            self.hass.loop.call_soon_threadsafe(self._set_value, "next_alarm", None)
+            return
         try:
-            digits = [(byte >> 4) * 10 + (byte & 0x0F) for byte in raw]
-            if len(digits) >= 7 and all(value < 100 for value in digits[:7]):
-                value = datetime(
-                    2000 + digits[6],
-                    digits[5],
-                    digits[3],
-                    digits[2],
-                    digits[1],
-                    digits[0],
-                    tzinfo=dt_util.DEFAULT_TIME_ZONE,
-                )
-                self.hass.loop.call_soon_threadsafe(
-                    self._set_value, "next_alarm", value
-                )
-        except (ValueError, IndexError):
+            second, minute, hour = ((b >> 4) * 10 + (b & 0x0F) for b in raw[:3])
+            alarm_time = dt_time(hour, minute, second)
+        except ValueError:
             _LOGGER.debug("Unknown Pavlok next-alarm payload: %s", raw.hex())
+            return
+        days = self._alarm_weekday_mask(raw[5]) if len(raw) >= 6 else 0
+        now = dt_util.now()
+        for ahead in range(8):
+            candidate = datetime.combine(
+                now.date(), alarm_time, tzinfo=now.tzinfo
+            ) + timedelta(days=ahead)
+            if candidate <= now:
+                continue
+            # マスクが取れなければ曜日で絞らない（最初に来る時刻を採る）
+            if days and not days & (1 << ((candidate.weekday() + 1) % 7)):
+                continue
+            self.hass.loop.call_soon_threadsafe(
+                self._set_value, "next_alarm", candidate
+            )
+            return
+        _LOGGER.debug("No upcoming Pavlok alarm matched payload: %s", raw.hex())
+
+    def _alarm_weekday_mask(self, alarm_id: int) -> int:
+        """Return the stored weekday bits for an alarm id, or 0 when unknown."""
+        raw = self._known_alarm_records.get(str(alarm_id))
+        if raw is None or not (roots := self._split_tlvs(raw)):
+            return 0
+        for name, field, _ in self._split_tlvs(roots[0][1]):
+            if name == "TM" and len(field) >= 4:
+                return field[3] & ~ALARM_ENABLED_BIT & 0x7F
+        return 0
 
     def _set_value(self, key: str, value: Any) -> None:
         self.data[key] = value
