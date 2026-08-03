@@ -50,7 +50,6 @@ from .const import (
     BTN_ACT_TIMER,
     CHR_ACTRL,
     CHR_ALARM_TIME,
-    CHR_ANTFY,
     CHR_AWRITE,
     CHR_BEEP,
     CHR_CMD7,
@@ -248,8 +247,10 @@ class PavlokConnection:
             (CHR_EVENTS, self._event_notify),
             (CHR_STATUS, self._status_notify),
             (BATTERY_CHR, self._battery_notify),
-            (CHR_AWRITE, self._alarm_notify),
-            (CHR_ANTFY, self._alarm_notify),
+            # 読み出し要求(0x06)の応答は A-Ctrl 自身の通知として20バイトずつ返る
+            # (btsnoopで確認、2026-08-02)。A-Write/A-Notify ではない——そちらを購読して
+            # いた間、応答は永久に届かず一覧が常に空だった。
+            (CHR_ACTRL, self._alarm_notify),
             (CHR_FILES, self._history_notify),
             (CHR_ALARM_TIME, self._alarm_time_notify),
         ):
@@ -468,7 +469,14 @@ class PavlokConnection:
         try:
             await self._write(CHR_ACTRL, bytes([ACTRL_READ]) + ALARM_PROFILE)
             await asyncio.wait_for(self._alarm_done.wait(), timeout=5)
-            return bytes(self._alarm_data)
+            payload = bytes(self._alarm_data)
+            if not payload:
+                # 空の応答から「登録0件」と「読み出し失敗」は区別できない。書き込みは
+                # read-modify-write なので、ここで空を通すと既存のアラームを消してしまう。
+                raise HomeAssistantError(
+                    "Pavlok returned no alarm document; refusing to overwrite alarms"
+                )
+            return payload
         except TimeoutError as err:
             raise HomeAssistantError(
                 "Timed out reading existing Pavlok alarms; refusing to overwrite them"
