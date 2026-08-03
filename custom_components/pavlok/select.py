@@ -38,7 +38,12 @@ async def async_setup_entry(
 
 
 class PavlokButtonAssignment(PavlokEntity, SelectEntity, RestoreEntity):
-    """The firmware cannot read assignments, therefore restore/optimistic state is used."""
+    """A physical button slot, reported by the device itself.
+
+    The device answers the read command with the current assignment, so the shown
+    value reflects the hardware even when it was changed from the official app.
+    The restored value is only a placeholder until the first reply arrives.
+    """
 
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = _OPTIONS
@@ -59,7 +64,7 @@ class PavlokButtonAssignment(PavlokEntity, SelectEntity, RestoreEntity):
 
     @property
     def current_option(self) -> str:
-        return self._current
+        return self.manager.data["buttons"].get(self._slot, self._current)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -71,4 +76,5 @@ class PavlokButtonAssignment(PavlokEntity, SelectEntity, RestoreEntity):
     async def async_select_option(self, option: str) -> None:
         await self.manager.async_assign_button(self._slot, option)
         self._current = option
+        self.manager.data["buttons"][self._slot] = option
         self.async_write_ha_state()

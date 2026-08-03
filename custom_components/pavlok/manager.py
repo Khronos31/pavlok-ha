@@ -48,6 +48,8 @@ from .const import (
     BTN_ACT_SLEEP,
     BTN_ACT_STOPWATCH,
     BTN_ACT_TIMER,
+    BTN_READ,
+    BTN_READ_REPLY,
     CHR_ACTRL,
     CHR_ALARM_TIME,
     CHR_AWRITE,
@@ -81,6 +83,7 @@ from .const import (
     find_sleep_records,
     iter_blocks,
     parse_activity,
+    parse_btn_action,
     parse_button,
     parse_file_header,
     parse_sleep_flag,
@@ -138,6 +141,7 @@ class PavlokConnection:
             "last_sleep": None,
             "next_alarm": None,
             "alarms": [],
+            "buttons": {},
             "device_info": {},
         }
         self._client: BleakClient | None = None
@@ -309,6 +313,7 @@ class PavlokConnection:
             # 読み出しバッファを汚さないよう別コールバックにする。
             (CHR_AWRITE, self._alarm_write_ack),
             (CHR_FILES, self._history_notify),
+            (CHR_CMD7, self._button_notify),
             (CHR_ALARM_TIME, self._alarm_time_notify),
         ):
             try:
@@ -329,6 +334,10 @@ class PavlokConnection:
             await self.async_refresh_alarms()
         except HomeAssistantError:
             _LOGGER.debug("Pavlok alarm list unavailable after connection")
+        try:
+            await self.async_refresh_buttons()
+        except Exception:  # noqa: BLE001 - never let a read stop the connection
+            _LOGGER.debug("Pavlok button assignments unavailable", exc_info=True)
 
     def _disconnected(self, _: BleakClient) -> None:
         self.hass.loop.call_soon_threadsafe(self._mark_disconnected)
@@ -581,6 +590,28 @@ class PavlokConnection:
     def _set_value(self, key: str, value: Any) -> None:
         self.data[key] = value
         self._publish()
+
+    def _button_notify(self, _: Any, payload: bytearray) -> None:
+        """Collect one 01 <slot> <action> reply per physical button slot."""
+        raw = bytes(payload)
+        if len(raw) < 3 or raw[0] != BTN_READ_REPLY:
+            return
+        option = parse_btn_action(raw[2:])
+        if option:
+            self.hass.loop.call_soon_threadsafe(self._set_button, raw[1], option)
+
+    def _set_button(self, slot: int, option: str) -> None:
+        self.data["buttons"][slot] = option
+        self._publish()
+
+    async def async_refresh_buttons(self) -> None:
+        """Ask the device for its six button assignments.
+
+        The replies arrive as notifications on the command channel, which is why
+        the assignments used to look unreadable: nothing comes back from a GATT
+        read, and the official app never issues one either.
+        """
+        await self._write(CHR_CMD7, BTN_READ)
 
     def _alarm_write_ack(self, _: Any, payload: bytearray) -> None:
         """A-Write reports 00000000 on accept and 02000000 on reject."""

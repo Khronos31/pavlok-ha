@@ -387,6 +387,29 @@ BTN_ACT_STOPWATCH = bytes.fromhex("11021001")
 BTN_ACT_TIMER = bytes.fromhex("11021002")
 BTN_ACT_SLEEP = bytes.fromhex("130102")
 BTN_ACT_DISABLE = bytes.fromhex("ff")
+# Read the six assignments back: write BTN_READ to 0x7001 with notifications on and
+# the device answers with one 01 <slot> <action> frame per slot.  The action bytes
+# are exactly what the write command takes, so one codec serves both directions.
+BTN_READ = bytes.fromhex("0101")
+BTN_READ_REPLY = 0x01
+
+
+def parse_btn_action(action: bytes) -> str:
+    """Map an assignment payload back to a select option, or "" when unknown."""
+    if action == BTN_ACT_DISABLE:
+        return "disabled"
+    if action == BTN_ACT_STOPWATCH:
+        return "stopwatch"
+    if action == BTN_ACT_TIMER:
+        return "timer"
+    if action == BTN_ACT_SLEEP:
+        return "sleep_tracking"
+    for kind in (STIM_VIBE, STIM_BEEP, STIM_ZAP):
+        # The count lives in the low bits of byte 1, so compare everything else.
+        reference = btn_action_stim(kind)
+        if len(action) == len(reference) and action[0] == reference[0]:
+            return kind
+    return ""
 
 
 def btn_action_stim(kind: str, count: int = 1) -> bytes:
