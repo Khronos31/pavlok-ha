@@ -127,6 +127,7 @@ _FILE_HEADER_BYTES: Final = 14
 _HISTORY_IDLE_SECONDS: Final = 10
 _BLOCK_TIMEOUT: Final = 60
 _BLOCK_ATTEMPTS: Final = 3
+_EMPTY_ALARM_RETRIES: Final = 2
 # 接続は電波が弱いと張り直しを繰り返す。取得は1分ほどBLEを占有するので、
 # 接続を機に走らせる分には下限を設ける（記録終了を機にする分は制限しない）。
 _HISTORY_MIN_INTERVAL: Final = 1800
@@ -690,14 +691,43 @@ class PavlokConnection:
         """
         await self._write(CHR_CMD7, BTN_READ)
 
+    async def _async_read_alarms_confirmed(self) -> bytes:
+        """Read the alarm document, insisting on a stable answer before a write.
+
+        An empty answer means either "no alarms" or "the read failed", and the two
+        look identical.  Repeating it turns a transient failure into a mismatch,
+        which is safer than overwriting alarms that are actually there.
+        """
+        payload = await self._async_read_alarm_payload()
+        if payload:
+            return payload
+        for _ in range(_EMPTY_ALARM_RETRIES):
+            if await self._async_read_alarm_payload():
+                raise HomeAssistantError(
+                    "Pavlok alarm list read is unstable; refusing to overwrite alarms"
+                )
+        return b""
+
     def _alarm_write_ack(self, _: Any, payload: bytearray) -> None:
         """A-Write reports 00000000 on accept and 02000000 on reject."""
         _LOGGER.debug("Pavlok alarm write acknowledgement: %s", payload.hex())
 
     def _alarm_notify(self, _: Any, payload: bytearray) -> None:
-        if self._alarm_done:
-            self._alarm_data.extend(payload)
-            self.hass.loop.call_soon_threadsafe(self._schedule_alarm_complete)
+        """Collect the alarm document, whose own header states how long it is.
+
+        Waiting for a quiet period alone is not enough: a gap between notifications
+        on a busy proxy ends the read early, and because every write is a
+        read-modify-write, a short document silently drops alarms.
+        """
+        if self._alarm_done is None:
+            return
+        self._alarm_data.extend(payload)
+        if len(self._alarm_data) >= 4:
+            declared = 4 + struct.unpack_from("<H", self._alarm_data, 2)[0]
+            if len(self._alarm_data) >= declared:
+                self.hass.loop.call_soon_threadsafe(self._alarm_done.set)
+                return
+        self.hass.loop.call_soon_threadsafe(self._schedule_alarm_complete)
 
     def _schedule_alarm_complete(self) -> None:
         """Finish a variable-length alarm transfer after a short quiet period."""
@@ -760,18 +790,11 @@ class PavlokConnection:
         try:
             await self._write(CHR_ACTRL, _actrl(ACTRL_READ))
             await asyncio.wait_for(self._alarm_done.wait(), timeout=5)
-            payload = bytes(self._alarm_data)
-            if not payload:
-                # 空の応答から「登録0件」と「読み出し失敗」は区別できない。書き込みは
-                # read-modify-write なので、ここで空を通すと既存のアラームを消してしまう。
-                raise HomeAssistantError(
-                    "Pavlok returned no alarm document; refusing to overwrite alarms"
-                )
-            return payload
-        except TimeoutError as err:
-            raise HomeAssistantError(
-                "Timed out reading existing Pavlok alarms; refusing to overwrite them"
-            ) from err
+            return bytes(self._alarm_data)
+        except TimeoutError:
+            # 0件のデバイスは何も返さないので、無音は「空」と読むしかない。取りこぼしと
+            # 区別できないため、書き込み前に何度か読み直して同じ結果になることを見る。
+            return b""
         finally:
             self._alarm_done = None
             if self._alarm_setter:
@@ -903,7 +926,7 @@ class PavlokConnection:
 
     async def async_set_alarm(self, values: dict[str, Any]) -> None:
         """Append one alarm after successfully reading and retaining existing entries."""
-        records = self._parse_alarm_document(await self._async_read_alarm_payload())
+        records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
         alarm_id = str(
             max((int(item[0]) for item in records if item[0].isdigit()), default=-1) + 1
         )
@@ -912,14 +935,14 @@ class PavlokConnection:
 
     async def async_refresh_alarms(self) -> None:
         """Read and expose on-device alarm IDs without rewriting anything."""
-        records = self._parse_alarm_document(await self._async_read_alarm_payload())
+        records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
         self._known_alarm_records = dict(records)
         self.data["alarms"] = [{"id": alarm_id} for alarm_id, _ in records]
         self._publish()
 
     async def async_delete_alarm(self, alarm_id: str) -> None:
         """Delete one record while retaining all remaining raw device records."""
-        records = self._parse_alarm_document(await self._async_read_alarm_payload())
+        records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
         remaining = [
             (record_id, raw) for record_id, raw in records if record_id != str(alarm_id)
         ]
@@ -937,7 +960,7 @@ class PavlokConnection:
             self.data["wake_enabled"] = enabled
         wake_time = self.data.get("wake_time", dt_time(7, 0))
         wake_enabled = bool(self.data.get("wake_enabled", False))
-        records = self._parse_alarm_document(await self._async_read_alarm_payload())
+        records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
         reserved_id: str | None = None
         retained: list[tuple[str, bytes]] = []
         for record_id, raw in records:
