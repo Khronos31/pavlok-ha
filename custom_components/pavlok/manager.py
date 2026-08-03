@@ -46,6 +46,8 @@ from .const import (
     BATTERY_CHR,
     BTN_READ,
     BTN_READ_REPLY,
+    TIMER_CONFIG_REPLY,
+    TIMER_READ,
     CHR_ACTRL,
     CHR_ALARM_TIME,
     CHR_AWRITE,
@@ -81,6 +83,7 @@ from .const import (
     parse_activity,
     parse_btn_action,
     parse_button,
+    parse_timer_config,
     parse_file_header,
     parse_sleep_flag,
     parse_steps,
@@ -140,6 +143,10 @@ class PavlokConnection:
             "rssi_by_scanner": {},
             "timer": 0,
             "timer_type": "idle",
+            "timer_running": False,
+            "timer_finishes_at": None,
+            "timer_config": {},
+            "stopwatch_config": {},
             "sleep_tracking": False,
             "last_sleep": None,
             "next_alarm": None,
@@ -318,7 +325,7 @@ class PavlokConnection:
             # 読み出しバッファを汚さないよう別コールバックにする。
             (CHR_AWRITE, self._alarm_write_ack),
             (CHR_FILES, self._history_notify),
-            (CHR_CMD7, self._button_notify),
+            (CHR_CMD7, self._command_notify),
             (CHR_ALARM_TIME, self._alarm_time_notify),
         ):
             try:
@@ -341,8 +348,9 @@ class PavlokConnection:
             _LOGGER.debug("Pavlok alarm list unavailable after connection")
         try:
             await self.async_refresh_buttons()
+            await self.async_refresh_timer_config()
         except Exception:  # noqa: BLE001 - never let a read stop the connection
-            _LOGGER.debug("Pavlok button assignments unavailable", exc_info=True)
+            _LOGGER.debug("Pavlok stored settings unavailable", exc_info=True)
 
     def _disconnected(self, _: BleakClient) -> None:
         self.hass.loop.call_soon_threadsafe(self._mark_disconnected)
@@ -447,6 +455,8 @@ class PavlokConnection:
             await self._async_write_timer_setup(
                 kind, seconds, stimulus, interval, repeat
             )
+            # 残り時間の算出に使うので、書いた直後に読み直して実機と合わせる。
+            await self.async_refresh_timer_config()
         elif action == "save":
             raise HomeAssistantError("seconds is required to save a timer")
         if action == "save":
@@ -517,11 +527,27 @@ class PavlokConnection:
                 self.data["button_event"] = f"{masks[button[0]]}_{presses[button[1]]}"
         timer = parse_timer(payload)
         if timer:
-            self.data["timer_type"], self.data["timer"] = timer
+            kind, elapsed, running = timer
+            self.data["timer_type"] = kind
+            self.data["timer"] = elapsed
+            self.data["timer_running"] = running
+            self.data["timer_finishes_at"] = self._timer_finish(kind, elapsed, running)
         sleep = parse_sleep_flag(payload)
         if sleep is not None:
             self.data["sleep_tracking"] = sleep
         self._publish()
+
+    def _timer_finish(self, kind: str, elapsed: int, running: bool) -> datetime | None:
+        """When a running countdown will reach zero, using the stored duration.
+
+        A stopwatch counts up with no end, and the events only arrive every few
+        seconds, so publishing an end time lets the frontend show a live countdown
+        without polling the device.
+        """
+        seconds = self.data["timer_config"].get("seconds")
+        if kind != "timer" or not running or not seconds or elapsed > seconds:
+            return None
+        return dt_util.utcnow() + timedelta(seconds=seconds - elapsed)
 
     def _status_notify(self, _: Any, payload: bytearray) -> None:
         if len(payload) >= 3:
@@ -588,14 +614,32 @@ class PavlokConnection:
         self.data[key] = value
         self._publish()
 
-    def _button_notify(self, _: Any, payload: bytearray) -> None:
-        """Collect one 01 <slot> <action> reply per physical button slot."""
+    def _command_notify(self, _: Any, payload: bytearray) -> None:
+        """Route the command channel's replies by their leading opcode."""
         raw = bytes(payload)
-        if len(raw) < 3 or raw[0] != BTN_READ_REPLY:
+        if not raw:
             return
-        option = parse_btn_action(raw[2:])
-        if option:
-            self.hass.loop.call_soon_threadsafe(self._set_button, raw[1], option)
+        if raw[0] == BTN_READ_REPLY and len(raw) >= 3:
+            option = parse_btn_action(raw[2:])
+            if option:
+                self.hass.loop.call_soon_threadsafe(self._set_button, raw[1], option)
+            return
+        if raw[0] == TIMER_CONFIG_REPLY and (config := parse_timer_config(raw)):
+            self.hass.loop.call_soon_threadsafe(self._set_timer_config, config)
+
+    def _set_timer_config(self, config: dict[str, Any]) -> None:
+        key = "stopwatch_config" if config["kind"] == "stopwatch" else "timer_config"
+        self.data[key] = config
+        self._publish()
+
+    async def async_refresh_timer_config(self) -> None:
+        """Ask the device for its stored timer and stopwatch setups.
+
+        Nothing comes back while a slot is empty, so an absent reply is not an
+        error.  The stored duration is what makes a remaining time computable.
+        """
+        for command in TIMER_READ.values():
+            await self._write(CHR_CMD7, command)
 
     def _set_button(self, slot: int, option: str) -> None:
         self.data["buttons"][slot] = option

@@ -165,14 +165,17 @@ def parse_button(payload: bytes):
 
 
 def parse_timer(payload: bytes):
-    """Return (kind, elapsed_seconds) or ('idle', 0). kind: 'stopwatch'|'timer'|'idle'."""
+    """Return (kind, elapsed_seconds, running) or ('idle', 0, False).
+
+    Byte 2 carries the run state: 0x80 just started, 0x90 running, 0x10 stopped.
+    """
     if not payload or payload[0] != EVT_TIMER:
         return None
     if len(payload) < 7:
-        return ("idle", 0)
+        return ("idle", 0, False)
     kind = {1: "stopwatch", 2: "timer"}.get(payload[1], "unknown")
     elapsed = payload[3] | (payload[4] << 8) | (payload[5] << 16)
-    return (kind, elapsed)
+    return (kind, elapsed, bool(payload[2] & TIMER_FLAG_RUNNING))
 
 
 def parse_sleep_flag(payload: bytes) -> bool | None:
@@ -428,6 +431,38 @@ BTN_ACT_DISABLE = bytes.fromhex("ff")
 # are exactly what the write command takes, so one codec serves both directions.
 BTN_READ = bytes.fromhex("0101")
 BTN_READ_REPLY = 0x01
+# The command channel answers three read requests, each as a notification on
+# itself.  They stay silent while nothing is stored, which is what made them look
+# write-only until a timer had actually been saved (2026-08-03).
+TIMER_READ = {"timer": bytes.fromhex("1013"), "stopwatch": bytes.fromhex("1012")}
+TIMER_CONFIG_REPLY = 0x12
+
+
+def parse_timer_config(payload: bytes):
+    """Decode a stored timer/stopwatch setup, or None.
+
+        12 13 f5 03 01 8d90 f0 04 01 2a 0a 80
+        │  │  └ 時間 (01 + 可変長整数)  │     └ 80=一度に / 00=毎日
+        │  └ 13=タイマー 12=SW          └ 刺激・間隔
+        └ 応答
+    """
+    if len(payload) < 8 or payload[0] != TIMER_CONFIG_REPLY or payload[2] != 0xF5:
+        return None
+    length = payload[3]
+    tail = payload[4 + length :]
+    if len(tail) < 6:
+        return None
+    try:
+        seconds = varlen_decode(payload[5 : 4 + length])
+    except (IndexError, ValueError):
+        return None
+    return {
+        "kind": "stopwatch" if payload[1] == TIMER_KIND_STOPWATCH else "timer",
+        "seconds": seconds,
+        "stimulus": {v: k for k, v in STIM_CODE.items()}.get(tail[2]),
+        "interval": tail[4],
+        "interval_mode": "repeat" if tail[5] == TIMER_REPEAT else "once",
+    }
 # The app offers one to five repeats for a stimulus assignment.
 BTN_STIM_COUNTS = range(1, 6)
 _BTN_FIXED = {

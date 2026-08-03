@@ -73,6 +73,7 @@ async def async_setup_entry(
                 device_class=SensorDeviceClass.TIMESTAMP,
             ),
             PavlokTimerSensor(manager, entry),
+            PavlokTimerFinishSensor(manager, entry),
             PavlokAlarmsSensor(manager, entry),
         ]
     )
@@ -168,8 +169,37 @@ class PavlokTimerSensor(PavlokEntity, SensorEntity):
         return self.manager.data["timer"]
 
     @property
-    def extra_state_attributes(self) -> dict[str, str]:
-        return {"type": self.manager.data["timer_type"]}
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Show the stored setup next to the elapsed time.
+
+        The device only reports elapsed seconds, so the configured duration is what
+        makes the reading interpretable.
+        """
+        data = self.manager.data
+        return {
+            "type": data["timer_type"],
+            "running": data["timer_running"],
+            "timer_settings": data["timer_config"],
+            "stopwatch_settings": data["stopwatch_config"],
+        }
+
+
+class PavlokTimerFinishSensor(PavlokEntity, SensorEntity):
+    """When a running countdown reaches zero.
+
+    Home Assistant renders a timestamp as a live relative time, so this shows a
+    ticking countdown even though the device only reports every few seconds.
+    """
+
+    _attr_name = "Timer finishes"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
+        super().__init__(manager, entry, "timer_finishes")
+
+    @property
+    def native_value(self) -> Any:
+        return self.manager.data["timer_finishes_at"]
 
 
 class PavlokAlarmsSensor(PavlokEntity, SensorEntity):
