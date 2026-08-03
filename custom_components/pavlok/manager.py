@@ -53,15 +53,21 @@ from .const import (
     CHR_AWRITE,
     CHR_BEEP,
     CHR_CMD7,
+    CHR_DAQ,
     CHR_EVENTS,
     CHR_FILES,
+    CHR_SLEEP_AUTO,
     CHR_STATUS,
     CHR_TIME,
     CHR_VIBE,
     CHR_ZAP,
+    DAQ_START,
+    DAQ_STOP,
     DEVICE_INFO_SVC,
     DOMAIN,
     FILES_TYPE_COARSE,
+    SLEEP_AUTO_OFF,
+    SLEEP_AUTO_ON,
     STIM_BEEP,
     STIM_CODE,
     STIM_VIBE,
@@ -85,7 +91,7 @@ from .const import (
     parse_button,
     parse_timer_config,
     parse_file_header,
-    parse_sleep_flag,
+    parse_sleep_state,
     parse_steps,
     parse_timer,
     truncate_block,
@@ -148,6 +154,7 @@ class PavlokConnection:
             "timer_config": {},
             "stopwatch_config": {},
             "sleep_tracking": False,
+            "sleep_auto": False,
             "last_sleep": None,
             "next_alarm": None,
             "alarms": [],
@@ -433,6 +440,18 @@ class PavlokConnection:
         action_bytes = btn_action_bytes(action)
         await self._write(CHR_CMD7, bytes([0x02, slot]) + action_bytes)
 
+    async def async_set_sleep_auto(self, enabled: bool) -> None:
+        """Turn the device's automatic sleep detection on or off.
+
+        No schedule is involved: three captures of the app saving a bedtime window
+        showed only this two byte write, so the times stay in the app.
+        """
+        await self._write(CHR_SLEEP_AUTO, SLEEP_AUTO_ON if enabled else SLEEP_AUTO_OFF)
+
+    async def async_set_sleep_recording(self, enabled: bool) -> None:
+        """Start or stop a sleep recording, the same as a long press on the device."""
+        await self._write(CHR_DAQ, DAQ_START if enabled else DAQ_STOP)
+
     async def async_timer(
         self,
         action: str,
@@ -468,7 +487,8 @@ class PavlokConnection:
             "reset": TIMER_OP_RESET,
         }[action]
         await self._write(
-            CHR_CMD7, TIMER_OP_FRAME + bytes([operation, TIMER_OP_KIND[kind]])
+            CHR_CMD7,
+    CHR_DAQ, TIMER_OP_FRAME + bytes([operation, TIMER_OP_KIND[kind]])
         )
 
     async def _async_write_timer_setup(
@@ -495,6 +515,7 @@ class PavlokConnection:
         )
         await self._write(
             CHR_CMD7,
+    CHR_DAQ,
             bytes([0x22])
             + struct.pack("<H", len(body))
             + body
@@ -532,9 +553,9 @@ class PavlokConnection:
             self.data["timer"] = elapsed
             self.data["timer_running"] = running
             self.data["timer_finishes_at"] = self._timer_finish(kind, elapsed, running)
-        sleep = parse_sleep_flag(payload)
+        sleep = parse_sleep_state(payload)
         if sleep is not None:
-            self.data["sleep_tracking"] = sleep
+            self.data["sleep_auto"], self.data["sleep_tracking"] = sleep
         self._publish()
 
     def _timer_finish(self, kind: str, elapsed: int, running: bool) -> datetime | None:

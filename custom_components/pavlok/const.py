@@ -50,7 +50,12 @@ DEVICE_INFO_SVC = "0000180a-0000-1000-8000-00805f9b34fb"
 # --- 156e1000 stimulus / settings ----------------------------------------
 CHR_VIBE = chr16(0x1001)   # RW  5 bytes
 CHR_BEEP = chr16(0x1002)   # RW  5 bytes
-CHR_ZAP = chr16(0x1003)    # RWN 2 bytes
+CHR_ZAP = chr16(0x1003)
+# Sleep recording control.  Start is 01 02 (the app pads it with three bytes that
+# turn out to be optional); stop is a single 00.
+CHR_DAQ = chr16(0x1008)
+DAQ_START = bytes([0x01, 0x02])
+DAQ_STOP = bytes([0x00])    # RWN 2 bytes
 CHR_LED = chr16(0x1004)
 CHR_TIME = chr16(0x1005)   # RW  BCD 8 bytes (see time_bytes)
 CHR_HD = chr16(0x1006)     # hand detection; byte0 bit0 = enabled
@@ -70,6 +75,10 @@ CHR_ANTFY = chr16(0x5003)
 
 # --- 156e0000 status ------------------------------------------------------
 CHR_STATUS = chr16(0x0001)  # notify ~15s; byte2 = battery %
+# Automatic sleep detection on/off.  Write only; the state comes back as an event.
+CHR_SLEEP_AUTO = chr16(0x0008)
+SLEEP_AUTO_ON = bytes([0x02, 0x01])
+SLEEP_AUTO_OFF = bytes([0x02, 0x00])
 
 # --- 156e7000 command channel --------------------------------------------
 CHR_CMD7 = chr16(0x7001)    # timer/stopwatch + button assignment commands
@@ -134,7 +143,9 @@ EVT_ACTIVITY = 0x02   # 11 bytes: [02, cum_activity u32 @1, time u16 @5, ...]
 EVT_STEPS = 0x03      # [03, cumulative_steps u32 LE]
 EVT_BUTTON = 0x05     # [05, (button_mask<<4)|press]  btn 0x10 top /0x20 mid /0x40 bottom; press 1 short 3 long
 EVT_TIMER = 0x0D      # 0d idle | 0d KIND 90 <elapsed u24 LE> 00 ; KIND 01=stopwatch 02=timer
-EVT_SLEEP = 0x04  # 04 01 02 = sleep tracking ON, 04 01 00 = OFF
+# 04 <自動検出 00/01> <記録中 00/02>。2バイト目を読み落としていて、
+# 「自動追跡が有効か」を捨てていた（2026-08-03 にアプリの操作4種で確認）。
+EVT_SLEEP = 0x04
 
 BUTTON_TOP = 0x10
 BUTTON_MID = 0x20
@@ -178,10 +189,11 @@ def parse_timer(payload: bytes):
     return (kind, elapsed, bool(payload[2] & TIMER_FLAG_RUNNING))
 
 
-def parse_sleep_flag(payload: bytes) -> bool | None:
-    if len(payload) >= 3 and payload[0] == EVT_SLEEP:
-        return payload[2] == 0x02
-    return None
+def parse_sleep_state(payload: bytes):
+    """Return (automatic_detection_on, recording_now) or None."""
+    if len(payload) < 3 or payload[0] != EVT_SLEEP:
+        return None
+    return (payload[1] == 0x01, payload[2] == 0x02)
 
 
 # ==========================================================================
