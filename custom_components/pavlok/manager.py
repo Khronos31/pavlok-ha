@@ -105,6 +105,11 @@ def _actrl(mode: int) -> bytes:
 
 
 _RECONNECT_MAX_SECONDS: Final = 60
+_FILE_HEADER_BYTES: Final = 14
+# 履歴は10万バイト超あり、BLE越しでは数分かかる。宣言サイズを待つのが本筋で、
+# この値は「応答が完全に止まった」ときの打ち切りにすぎない。
+_HISTORY_TIMEOUT: Final = 420
+_HISTORY_IDLE_SECONDS: Final = 10
 _STANDARD_DEVICE_INFO: Final = {
     "00002a29-0000-1000-8000-00805f9b34fb": "manufacturer",
     "00002a24-0000-1000-8000-00805f9b34fb": "model",
@@ -148,6 +153,8 @@ class PavlokConnection:
         self._last_activity: tuple[int, float] | None = None
         self._history_data = bytearray()
         self._history_done: asyncio.Event | None = None
+        self._history_expect = 0
+        self._history_idle: asyncio.TimerHandle | None = None
         self._alarm_data = bytearray()
         self._alarm_done: asyncio.Event | None = None
         self._alarm_setter: asyncio.TimerHandle | None = None
@@ -618,11 +625,41 @@ class PavlokConnection:
             self._alarm_setter = self.hass.loop.call_later(0.2, self._alarm_done.set)
 
     def _history_notify(self, _: Any, payload: bytearray) -> None:
+        if self._history_done is None:
+            return
+        self._history_data.extend(payload)
+        if len(self._history_data) >= self._history_expect:
+            self.hass.loop.call_soon_threadsafe(self._history_done.set)
+            return
+        self.hass.loop.call_soon_threadsafe(self._schedule_history_idle)
+
+    def _schedule_history_idle(self) -> None:
+        """Stop waiting once the stream has gone quiet for a while."""
+        if self._history_idle:
+            self._history_idle.cancel()
         if self._history_done:
-            self._history_data.extend(payload)
-            # A complete file has a last block marker; parsing later validates it.
-            if 0x7F in payload:
-                self.hass.loop.call_soon_threadsafe(self._history_done.set)
+            self._history_idle = self.hass.loop.call_later(
+                _HISTORY_IDLE_SECONDS, self._history_done.set
+            )
+
+    async def _async_read_file(
+        self, command: bytes, expect: int, timeout: float
+    ) -> bytes:
+        """Issue one Files request and collect the notified response."""
+        self._history_data = bytearray()
+        self._history_expect = expect
+        self._history_done = asyncio.Event()
+        try:
+            await self._write(CHR_FILES, command)
+            await asyncio.wait_for(self._history_done.wait(), timeout=timeout)
+        except TimeoutError as err:
+            raise HomeAssistantError("Timed out reading Pavlok history") from err
+        finally:
+            self._history_done = None
+            if self._history_idle:
+                self._history_idle.cancel()
+                self._history_idle = None
+        return bytes(self._history_data)
 
     async def _async_read_alarm_payload(self) -> bytes:
         """Read the complete alarm document before any read-modify-write operation."""
@@ -832,17 +869,25 @@ class PavlokConnection:
         self._publish()
 
     async def async_sync_history(self) -> None:
-        """Fetch coarse history and add sleep duration as external statistics."""
-        self._history_data = bytearray()
-        self._history_done = asyncio.Event()
-        try:
-            await self._write(CHR_FILES, files_command(FILES_TYPE_COARSE))
-            await asyncio.wait_for(self._history_done.wait(), timeout=30)
-        except TimeoutError as err:
-            raise HomeAssistantError("Timed out reading Pavlok history") from err
-        finally:
-            self._history_done = None
-        data = bytes(self._history_data)
+        """Fetch coarse history and expose the most recent sleep session.
+
+        The device serves a file in the two steps the official app uses: a 14 byte
+        header that announces the size, then the body.  The body runs past a
+        hundred kilobytes and takes minutes over BLE, so completion has to be
+        judged against that announced size.  The device keeps recording while it
+        is being read, so the sizes never match exactly.
+        """
+        header = await self._async_read_file(
+            files_command(FILES_TYPE_COARSE, 0, 0), _FILE_HEADER_BYTES, 30
+        )
+        if len(header) < _FILE_HEADER_BYTES:
+            raise HomeAssistantError("Pavlok did not return a history header")
+        total = parse_file_header(header)[3]
+        data = await self._async_read_file(
+            files_command(FILES_TYPE_COARSE),
+            int(total * 0.98),
+            _HISTORY_TIMEOUT,
+        )
         try:
             parse_file_header(data)
         except struct.error as err:
@@ -852,8 +897,14 @@ class PavlokConnection:
         records = [
             (start, duration)
             for _, _, _, _, body in iter_blocks(data)
-            for start, duration in find_sleep_records(body)
+            for start, duration, _ in find_sleep_records(body)
         ]
+        _LOGGER.debug(
+            "Pavlok history: %d of %d announced bytes, %d sleep records",
+            len(data),
+            total,
+            len(records),
+        )
         if not records:
             return
         start, duration = max(records)
@@ -863,21 +914,41 @@ class PavlokConnection:
             "duration": duration // 60,
         }
         self._publish()
+        try:
+            self._async_store_sleep_statistics(records)
+        except Exception:  # noqa: BLE001 - statistics must not hide the sensor value
+            _LOGGER.debug("Pavlok sleep statistics unavailable", exc_info=True)
+
+    def _async_store_sleep_statistics(
+        self, records: list[tuple[int, int]]
+    ) -> None:
+        """Record past sleep minutes so they survive the recorder's purge."""
         from homeassistant.components.recorder.statistics import (
             async_add_external_statistics,
         )
 
+        # Statistics are keyed by whole hours and must be unique and ordered, so
+        # sessions starting in the same hour are summed rather than dropped.
+        hourly: dict[datetime, float] = {}
+        for start, duration in records:
+            hour = datetime.fromtimestamp(start, tz=timezone.utc).replace(
+                minute=0, second=0, microsecond=0
+            )
+            hourly[hour] = hourly.get(hour, 0.0) + duration / 60
         metadata = {
             "source": DOMAIN,
             "statistic_id": f"{DOMAIN}:{self.entry.entry_id}_sleep_minutes",
             "name": f"{self.name} sleep duration",
             "unit_of_measurement": "min",
-            "has_mean": False,
+            "has_mean": True,
             "has_sum": False,
             "unit_class": None,
         }
-        statistics = [
-            {"start": timestamp, "state": seconds / 60}
-            for timestamp, seconds in records
-        ]
-        async_add_external_statistics(self.hass, metadata, statistics)
+        async_add_external_statistics(
+            self.hass,
+            metadata,
+            [
+                {"start": hour, "mean": minutes, "state": minutes}
+                for hour, minutes in sorted(hourly.items())
+            ],
+        )
