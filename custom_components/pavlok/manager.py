@@ -108,8 +108,9 @@ _RECONNECT_MAX_SECONDS: Final = 60
 _FILE_HEADER_BYTES: Final = 14
 # 履歴は10万バイト超あり、BLE越しでは数分かかる。宣言サイズを待つのが本筋で、
 # この値は「応答が完全に止まった」ときの打ち切りにすぎない。
-_HISTORY_TIMEOUT: Final = 420
 _HISTORY_IDLE_SECONDS: Final = 10
+_BLOCK_TIMEOUT: Final = 60
+_BLOCK_ATTEMPTS: Final = 3
 _STANDARD_DEVICE_INFO: Final = {
     "00002a29-0000-1000-8000-00805f9b34fb": "manufacturer",
     "00002a24-0000-1000-8000-00805f9b34fb": "model",
@@ -628,7 +629,14 @@ class PavlokConnection:
         if self._history_done is None:
             return
         self._history_data.extend(payload)
-        if len(self._history_data) >= self._history_expect:
+        if (
+            not self._history_expect
+            and len(self._history_data) >= _FILE_HEADER_BYTES
+        ):
+            # 応答自身が総バイト数を宣言するので、そこから完了条件を決める。
+            total = parse_file_header(bytes(self._history_data))[3]
+            self._history_expect = _FILE_HEADER_BYTES + total
+        if self._history_expect and len(self._history_data) >= self._history_expect:
             self.hass.loop.call_soon_threadsafe(self._history_done.set)
             return
         self.hass.loop.call_soon_threadsafe(self._schedule_history_idle)
@@ -643,9 +651,12 @@ class PavlokConnection:
             )
 
     async def _async_read_file(
-        self, command: bytes, expect: int, timeout: float
+        self, command: bytes, timeout: float, expect: int = 0
     ) -> bytes:
-        """Issue one Files request and collect the notified response."""
+        """Issue one Files request and collect the notified response.
+
+        ``expect`` of zero means the size is taken from the response's own header.
+        """
         self._history_data = bytearray()
         self._history_expect = expect
         self._history_done = asyncio.Event()
@@ -868,32 +879,50 @@ class PavlokConnection:
         await self._async_write_alarm_records(retained)
         self._publish()
 
-    async def async_sync_history(self) -> None:
-        """Fetch coarse history and expose the most recent sleep session.
+    async def _async_read_block(self, index: int) -> bytes | None:
+        """Fetch one history block, retrying because a lost notification is fatal.
 
-        The device serves a file in the two steps the official app uses: a 14 byte
-        header that announces the size, then the body.  The body runs past a
-        hundred kilobytes and takes minutes over BLE, so completion has to be
-        judged against that announced size.  The device keeps recording while it
-        is being read, so the sizes never match exactly.
+        A dropped notification leaves a hole that pushes everything after it out of
+        alignment, so a whole-file transfer loses its newest blocks -- exactly the
+        ones worth reading.  One block at a time keeps a retry cheap.
+        """
+        for _ in range(_BLOCK_ATTEMPTS):
+            try:
+                raw = await self._async_read_file(
+                    files_command(FILES_TYPE_COARSE, index, 1), _BLOCK_TIMEOUT
+                )
+            except HomeAssistantError:
+                continue
+            if len(raw) <= _FILE_HEADER_BYTES:
+                continue
+            total = parse_file_header(raw)[3]
+            if len(raw) >= _FILE_HEADER_BYTES + total:
+                return raw[_FILE_HEADER_BYTES : _FILE_HEADER_BYTES + total]
+        return None
+
+    async def async_sync_history(self) -> None:
+        """Fetch coarse history block by block and expose the newest sleep session.
+
+        The device serves files the way the official app asks for them: a 14 byte
+        header announcing how many blocks exist, then the blocks themselves.
         """
         header = await self._async_read_file(
-            files_command(FILES_TYPE_COARSE, 0, 0), _FILE_HEADER_BYTES, 30
+            files_command(FILES_TYPE_COARSE, 0, 0), 30, expect=_FILE_HEADER_BYTES
         )
         if len(header) < _FILE_HEADER_BYTES:
             raise HomeAssistantError("Pavlok did not return a history header")
-        total = parse_file_header(header)[3]
-        data = await self._async_read_file(
-            files_command(FILES_TYPE_COARSE),
-            int(total * 0.98),
-            _HISTORY_TIMEOUT,
-        )
-        try:
-            parse_file_header(data)
-        except struct.error as err:
-            raise HomeAssistantError(
-                "Pavlok returned an incomplete history file"
-            ) from err
+        _, first_index, block_count, _ = parse_file_header(header)
+        chunks: list[bytes] = []
+        missing: list[int] = []
+        for index in range(first_index, first_index + block_count):
+            block = await self._async_read_block(index)
+            if block is None:
+                missing.append(index)
+            else:
+                chunks.append(block)
+        if missing:
+            _LOGGER.debug("Pavlok history blocks unavailable: %s", missing)
+        data = header + b"".join(chunks)
         blocks = list(iter_blocks(data))
         records = [
             (start, duration)
@@ -901,19 +930,11 @@ class PavlokConnection:
             for start, duration, _ in find_sleep_records(body)
         ]
         _LOGGER.debug(
-            "Pavlok history: %d of %d announced bytes, %d blocks, %d sleep records",
-            len(data),
-            total,
+            "Pavlok history: %d of %d blocks, %d bytes, %d sleep records",
             len(blocks),
+            block_count,
+            len(data),
             len(records),
-        )
-        _LOGGER.debug("Pavlok history head: %s", data[:32].hex())
-        _LOGGER.debug(
-            "Pavlok history blocks: %s",
-            [
-                (hex(mark), btype, index, start_unix, len(body))
-                for mark, btype, index, start_unix, body in blocks
-            ],
         )
         if not records:
             return

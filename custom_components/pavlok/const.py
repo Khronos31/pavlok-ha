@@ -197,8 +197,15 @@ BLOCK_MARK_MORE = 0x3F
 BLOCK_MARK_LAST = 0x7F
 
 
-def files_command(type_: int, start: int = 0, end: int = 0xFFFFFFFF) -> bytes:
-    return struct.pack("<BII", type_, start, end)
+def files_command(type_: int, start: int = 0, count: int = 0xFFFFFFFF) -> bytes:
+    """Ask for ``count`` blocks beginning at block ``start``.
+
+    The second field is a count, not an end index (measured 2026-08-03):
+    start=26 count=1 returns one block, start=0 count=2 returns the two oldest,
+    and count=0 returns only the 14 byte header.  ``start`` is clamped to the
+    oldest block the device still holds.
+    """
+    return struct.pack("<BII", type_, start, count)
 
 
 def parse_file_header(data: bytes):
