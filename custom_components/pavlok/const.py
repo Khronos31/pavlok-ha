@@ -386,6 +386,69 @@ def alarm_stimulus_bytes(kind: str, intensity: int, count: int) -> bytes:
     return bytes([head, 0x0C, intensity, 0xFA, 0xFA])
 
 
+_ALARM_DAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+
+
+def _split_alarm_tlvs(data: bytes):
+    cursor = 0
+    while cursor + 4 <= len(data):
+        tag = data[cursor : cursor + 2].decode("ascii", errors="ignore")
+        length = struct.unpack_from("<H", data, cursor + 2)[0]
+        end = cursor + 4 + length
+        if len(tag) != 2 or end > len(data):
+            return
+        yield tag, data[cursor + 4 : end]
+        cursor = end
+
+
+def parse_alarm_record(raw: bytes) -> dict:
+    """Decode one stored alarm into the fields the app shows."""
+    roots = list(_split_alarm_tlvs(raw))
+    if not roots or roots[0][0] != "HA":
+        return {}
+    out: dict = {}
+    for tag, value in _split_alarm_tlvs(roots[0][1]):
+        if tag == "ID" and len(value) == 2:
+            out["id"] = str(struct.unpack("<H", value)[0])
+        elif tag == "AN":
+            out["name"] = value.decode("utf-8", errors="replace")
+        elif tag == "TM" and len(value) >= 4:
+            hour = (value[2] >> 4) * 10 + (value[2] & 0x0F)
+            minute = (value[1] >> 4) * 10 + (value[1] & 0x0F)
+            out["time"] = f"{hour:02d}:{minute:02d}"
+            out["enabled"] = bool(value[3] & ALARM_ENABLED_BIT)
+            out["days"] = [
+                name
+                for bit, name in enumerate(_ALARM_DAYS)
+                if value[3] & (1 << bit)
+            ]
+        elif tag == "WI" and len(value) == 2:
+            out["interval"] = struct.unpack("<H", value)[0]
+        elif tag == "SN" and value:
+            out["snooze"] = bool(value[0] & SN_SNOOZE)
+            out["snooze_zap"] = bool(value[0] & SN_SNOOZE_ZAP)
+        elif tag == "AO" and value:
+            out["unlock"] = {
+                AO_UNLOCK_JACKS: "jacks",
+                AO_UNLOCK_QR: "qr",
+                AO_UNLOCK_PUZZLE: "puzzle",
+            }.get(value[0] & ~(AO_LIGHT_SLEEP | AO_ESCALATE | AO_SMART) & 0xFF, "none")
+            out["light_sleep"] = bool(value[0] & AO_LIGHT_SLEEP)
+        elif tag == "JL" and value:
+            out["jacks"] = value[0]
+        elif tag in ("MH", "PH", "ZH"):
+            kind = {"MH": STIM_VIBE, "PH": STIM_BEEP, "ZH": STIM_ZAP}[tag]
+            inner = next(iter(_split_alarm_tlvs(value)), None)
+            if inner and inner[1]:
+                head = inner[1][0]
+                if head & 0x80:
+                    out[kind] = {
+                        "count": head & 0x7F,
+                        "intensity": inner[1][-3] if kind != STIM_ZAP else inner[1][1],
+                    }
+    return out
+
+
 def seal_alarm_message(ah_body_without_crc: bytes) -> bytes:
     """Wrap an AH body (already starting with 2 placeholder bytes 00 00 then AP/HA...)
     into a full AH TLV with a valid CRC in place of the placeholder."""

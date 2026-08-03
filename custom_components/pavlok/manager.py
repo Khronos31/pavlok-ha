@@ -93,6 +93,7 @@ from .const import (
     find_sleep_records,
     iter_blocks,
     parse_activity,
+    parse_alarm_record,
     parse_btn_action,
     parse_button,
     parse_timer_config,
@@ -921,7 +922,7 @@ class PavlokConnection:
             await self._write(CHR_AWRITE, message[offset : offset + 20])
         await self._write(CHR_ACTRL, _actrl(ACTRL_COMMIT))
         self._known_alarm_records = dict(records)
-        self.data["alarms"] = [{"id": alarm_id} for alarm_id, _ in records]
+        self.data["alarms"] = self._describe_alarms(records)
         self._publish()
 
     async def async_set_alarm(self, values: dict[str, Any]) -> None:
@@ -933,11 +934,16 @@ class PavlokConnection:
         records.append((alarm_id, self._build_alarm_record(values, alarm_id)))
         await self._async_write_alarm_records(records)
 
+    @staticmethod
+    def _describe_alarms(records: list[tuple[str, bytes]]) -> list[dict]:
+        """Expose what each stored alarm actually does, not just how many there are."""
+        return [parse_alarm_record(raw) or {"id": aid} for aid, raw in records]
+
     async def async_refresh_alarms(self) -> None:
         """Read and expose on-device alarm IDs without rewriting anything."""
         records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
         self._known_alarm_records = dict(records)
-        self.data["alarms"] = [{"id": alarm_id} for alarm_id, _ in records]
+        self.data["alarms"] = self._describe_alarms(records)
         self._publish()
 
     async def async_delete_alarm(self, alarm_id: str) -> None:
