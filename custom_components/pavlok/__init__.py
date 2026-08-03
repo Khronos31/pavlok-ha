@@ -31,7 +31,7 @@ PLATFORMS: Final = [
 SERVICE_STIMULATE: Final = "stimulate"
 SERVICE_SET_ALARM: Final = "set_alarm"
 SERVICE_DELETE_ALARM: Final = "delete_alarm"
-SERVICE_START_TIMER: Final = "start_timer"
+SERVICE_TIMER: Final = "timer"
 SERVICE_SYNC_HISTORY: Final = "sync_history"
 
 
@@ -93,9 +93,14 @@ def _register_services(hass: HomeAssistant) -> None:
     async def delete_alarm(call: ServiceCall) -> None:
         await _manager_from_call(hass, call).async_delete_alarm(call.data["id"])
 
-    async def start_timer(call: ServiceCall) -> None:
-        await _manager_from_call(hass, call).async_start_timer(
-            call.data["seconds"], call.data["stimulus"], call.data["interval"]
+    async def timer(call: ServiceCall) -> None:
+        await _manager_from_call(hass, call).async_timer(
+            call.data["action"],
+            call.data["type"],
+            seconds=call.data.get("seconds"),
+            stimulus=call.data["stimulus"],
+            interval=call.data["interval"],
+            repeat=call.data["interval_mode"] == "repeat",
         )
 
     async def sync_history(call: ServiceCall) -> None:
@@ -165,19 +170,26 @@ def _register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN,
-        SERVICE_START_TIMER,
-        start_timer,
+        SERVICE_TIMER,
+        timer,
         schema=vol.Schema(
             common
             | {
-                vol.Required("seconds"): vol.All(
-                    vol.Coerce(int), vol.Range(min=1, max=604800)
+                vol.Required("action"): vol.In(["start", "pause", "resume", "reset"]),
+                vol.Optional("type", default="timer"): vol.In(["timer", "stopwatch"]),
+                # start のときだけ必要。他の操作はオペコードのみで完結する。
+                vol.Optional("seconds"): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=86399)
                 ),
                 vol.Optional("stimulus", default=STIM_VIBE): vol.In(
                     [STIM_VIBE, STIM_BEEP, STIM_ZAP]
                 ),
                 vol.Optional("interval", default=0): vol.All(
                     vol.Coerce(int), vol.Range(min=0, max=255)
+                ),
+                # repeat は間隔ごとに刺激を繰り返し、リセットするまで止まらない。
+                vol.Optional("interval_mode", default="once"): vol.In(
+                    ["once", "repeat"]
                 ),
             }
         ),

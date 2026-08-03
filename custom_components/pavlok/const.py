@@ -337,6 +337,16 @@ TIMER_OP_START = 0x11
 TIMER_OP_RESET = 0x12
 TIMER_OP_PAUSE = 0x13
 TIMER_OP_RESUME = 0x14
+# Operation frame prefix; the trailing kind byte is 0x01 stopwatch / 0x02 timer.
+TIMER_OP_FRAME = bytes.fromhex("13031102")
+TIMER_OP_KIND = {"stopwatch": 0x01, "timer": 0x02}
+# Trailing flag of the 0x22 setup command, outside the u16 body length.
+# Confirmed on the device 2026-08-03 by counting vibrations: 0x80 fired once,
+# 0x00 fired again every interval.  The notifications are identical either way.
+TIMER_ONCE = 0x80
+TIMER_REPEAT = 0x00
+# Timer event flag byte: 0x80 just started, 0x90 running, 0x10 stopped.
+TIMER_FLAG_RUNNING = 0x80
 
 
 def varlen_encode(v: int) -> bytes:

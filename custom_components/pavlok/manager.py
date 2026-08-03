@@ -66,7 +66,16 @@ from .const import (
     STIM_CODE,
     STIM_VIBE,
     STIM_ZAP,
+    TIMER_KIND_STOPWATCH,
     TIMER_KIND_TIMER,
+    TIMER_ONCE,
+    TIMER_OP_FRAME,
+    TIMER_OP_KIND,
+    TIMER_OP_PAUSE,
+    TIMER_OP_RESET,
+    TIMER_OP_RESUME,
+    TIMER_OP_START,
+    TIMER_REPEAT,
     btn_action_stim,
     files_command,
     find_sleep_records,
@@ -396,10 +405,41 @@ class PavlokConnection:
         }[action]
         await self._write(CHR_CMD7, bytes([0x02, slot]) + action_bytes)
 
-    async def async_start_timer(
-        self, seconds: int, stimulus: str, interval: int
+    async def async_timer(
+        self,
+        action: str,
+        kind: str = "timer",
+        *,
+        seconds: int | None = None,
+        stimulus: str = STIM_VIBE,
+        interval: int = 0,
+        repeat: bool = False,
     ) -> None:
-        """Configure the device-side timer (an explicit service action only).
+        """Drive the device-side timer or stopwatch.
+
+        ``start`` writes the setup command and then the start opcode; the other
+        actions are opcodes only, so they need none of the setup parameters.
+        """
+        if action == "start":
+            if seconds is None:
+                raise HomeAssistantError("seconds is required to start a timer")
+            await self._async_write_timer_setup(
+                kind, seconds, stimulus, interval, repeat
+            )
+        operation = {
+            "start": TIMER_OP_START,
+            "pause": TIMER_OP_PAUSE,
+            "resume": TIMER_OP_RESUME,
+            "reset": TIMER_OP_RESET,
+        }[action]
+        await self._write(
+            CHR_CMD7, TIMER_OP_FRAME + bytes([operation, TIMER_OP_KIND[kind]])
+        )
+
+    async def _async_write_timer_setup(
+        self, kind: str, seconds: int, stimulus: str, interval: int, repeat: bool
+    ) -> None:
+        """Configure the device-side timer.
 
         Verified byte-for-byte against three captured app writes::
 
@@ -412,14 +452,18 @@ class PavlokConnection:
         trailing flag sits outside the u16 body length.
         """
         duration = b"\x01" + varlen_encode(seconds)
+        kind_code = TIMER_KIND_STOPWATCH if kind == "stopwatch" else TIMER_KIND_TIMER
         body = (
-            bytes([TIMER_KIND_TIMER, 0xF5, len(duration)])
+            bytes([kind_code, 0xF5, len(duration)])
             + duration
             + bytes([0xF0, 0x04, STIM_CODE[stimulus], 0x2A, interval])
         )
         await self._write(
             CHR_CMD7,
-            bytes([0x22]) + struct.pack("<H", len(body)) + body + bytes([0x80]),
+            bytes([0x22])
+            + struct.pack("<H", len(body))
+            + body
+            + bytes([TIMER_REPEAT if repeat else TIMER_ONCE]),
         )
 
     def _event_notify(self, _: Any, payload: bytearray) -> None:

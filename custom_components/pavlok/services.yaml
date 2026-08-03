@@ -93,26 +93,46 @@ delete_alarm:
       required: true
       selector:
         text:
-start_timer:
-  name: Start timer
-  description: Start a device-side timer with an optional repeating stimulus.
+timer:
+  name: Timer
+  description: >-
+    Start, pause, resume or reset the device-side timer or stopwatch.
+    Only "start" uses the setup fields below.
   fields:
-    seconds:
+    action:
       required: true
       selector:
+        select:
+          options: [start, pause, resume, reset]
+    type:
+      selector:
+        select:
+          options: [timer, stopwatch]
+    seconds:
+      description: Countdown length. Required for "start"; a stopwatch uses 0.
+      selector:
         number:
-          min: 1
-          max: 604800
+          min: 0
+          max: 86399
           unit_of_measurement: s
     stimulus:
       selector:
         select:
           options: [vibe, beep, zap]
     interval:
+      description: Seconds between stimuli.
       selector:
         number:
           min: 0
           max: 255
+          unit_of_measurement: s
+    interval_mode:
+      description: >-
+        "once" fires a single stimulus. "repeat" fires one every interval and
+        keeps going until the timer is reset.
+      selector:
+        select:
+          options: [once, repeat]
 sync_history:
   name: Sync history
   description: Read sleep history and add duration records to Home Assistant statistics.
