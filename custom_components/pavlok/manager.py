@@ -121,6 +121,8 @@ class PavlokConnection:
             "steps": None,
             "battery": None,
             "rssi": None,
+            "rssi_scanner": None,
+            "rssi_by_scanner": {},
             "timer": 0,
             "timer_type": "idle",
             "sleep_tracking": False,
@@ -194,7 +196,26 @@ class PavlokConnection:
             listener()
 
     def _async_bluetooth_update(self, *_: Any) -> None:
-        """Refresh diagnostic RSSI from the most recent scanner advertisement."""
+        """Refresh diagnostic RSSI from the proxy that currently sees the device best.
+
+        ``async_last_service_info`` returns whichever proxy advertised most recently,
+        so with several proxies the value jumps between them and says nothing about
+        the link in use.  Home Assistant picks the strongest proxy when connecting,
+        so the best RSSI is the meaningful one to publish.
+        """
+        devices = bluetooth.async_scanner_devices_by_address(
+            self.hass, self.address, True
+        )
+        if devices:
+            by_scanner = {
+                device.scanner.name: device.advertisement.rssi for device in devices
+            }
+            best = max(devices, key=lambda device: device.advertisement.rssi)
+            self.data["rssi"] = best.advertisement.rssi
+            self.data["rssi_scanner"] = best.scanner.name
+            self.data["rssi_by_scanner"] = by_scanner
+            self._publish()
+            return
         info = bluetooth.async_last_service_info(self.hass, self.address, True)
         if info:
             self.data["rssi"] = info.rssi

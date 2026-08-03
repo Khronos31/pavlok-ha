@@ -62,15 +62,7 @@ async def async_setup_entry(
                 state_class=SensorStateClass.MEASUREMENT,
                 unit=PERCENTAGE,
             ),
-            PavlokValueSensor(
-                manager,
-                entry,
-                "rssi",
-                "RSSI",
-                "rssi",
-                category=EntityCategory.DIAGNOSTIC,
-                unit="dBm",
-            ),
+            PavlokRssiSensor(manager, entry),
             PavlokLastSleepSensor(manager, entry),
             PavlokValueSensor(
                 manager,
@@ -113,6 +105,30 @@ class PavlokValueSensor(PavlokEntity, SensorEntity):
     @property
     def native_value(self) -> Any:
         return self.manager.data[self._data_key]
+
+
+class PavlokRssiSensor(PavlokEntity, SensorEntity):
+    """Signal strength as seen by the best Bluetooth proxy, naming that proxy."""
+
+    _attr_name = "RSSI"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = "dBm"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
+        super().__init__(manager, entry, "rssi")
+
+    @property
+    def native_value(self) -> Any:
+        return self.manager.data["rssi"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose every proxy's view; with one device this is the whole picture."""
+        return {
+            "scanner": self.manager.data.get("rssi_scanner"),
+            "by_scanner": self.manager.data.get("rssi_by_scanner", {}),
+        }
 
 
 class PavlokLastSleepSensor(PavlokEntity, SensorEntity):
