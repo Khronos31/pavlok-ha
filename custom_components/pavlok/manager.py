@@ -44,10 +44,6 @@ from .const import (
     AO_UNLOCK_PUZZLE,
     AO_UNLOCK_QR,
     BATTERY_CHR,
-    BTN_ACT_DISABLE,
-    BTN_ACT_SLEEP,
-    BTN_ACT_STOPWATCH,
-    BTN_ACT_TIMER,
     BTN_READ,
     BTN_READ_REPLY,
     CHR_ACTRL,
@@ -78,7 +74,7 @@ from .const import (
     TIMER_OP_RESUME,
     TIMER_OP_START,
     TIMER_REPEAT,
-    btn_action_stim,
+    btn_action_bytes,
     files_command,
     find_sleep_records,
     iter_blocks,
@@ -417,15 +413,7 @@ class PavlokConnection:
 
     async def async_assign_button(self, slot: int, action: str) -> None:
         """Write an optimistic physical-button assignment."""
-        action_bytes = {
-            "stopwatch": BTN_ACT_STOPWATCH,
-            "timer": BTN_ACT_TIMER,
-            "sleep_tracking": BTN_ACT_SLEEP,
-            "disabled": BTN_ACT_DISABLE,
-            "vibe": btn_action_stim(STIM_VIBE),
-            "beep": btn_action_stim(STIM_BEEP),
-            "zap": btn_action_stim(STIM_ZAP),
-        }[action]
+        action_bytes = btn_action_bytes(action)
         await self._write(CHR_CMD7, bytes([0x02, slot]) + action_bytes)
 
     async def async_timer(

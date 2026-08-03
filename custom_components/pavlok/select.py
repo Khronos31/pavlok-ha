@@ -8,21 +8,15 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import BTN_SLOT
+from .const import BTN_OPTIONS, BTN_SLOT
 from .entity import PavlokEntity
 from .manager import PavlokConnection
 
 # 状態値は小文字のまま保ち、表示名は translations 側で与える。
 # こうすると見た目を変えても自動化が参照する状態文字列が動かない。
-_OPTIONS = [
-    "disabled",
-    "vibe",
-    "beep",
-    "zap",
-    "timer",
-    "stopwatch",
-    "sleep_tracking",
-]
+_OPTIONS = BTN_OPTIONS
+# アプリのボタン設定画面と同じ番号（① トップ ② 真ん中 ③ 一番下）。
+_BUTTON_NUMBER = {"top": 1, "mid": 2, "bottom": 3}
 
 
 async def async_setup_entry(
@@ -58,7 +52,12 @@ class PavlokButtonAssignment(PavlokEntity, SelectEntity, RestoreEntity):
         slot: int,
     ) -> None:
         super().__init__(manager, entry, f"button_{position}_{press}")
-        self._attr_name = f"Button {position} {press}"
+        # デバイスページは表示名の辞書順に並ぶ。"top"/"mid"/"bottom" と
+        # "short"/"long" では上から順にも押し方の順にもならないので、アプリと同じ
+        # ボタン番号を使い、早押しには接尾辞を付けない（付けると long が先に来る）。
+        self._attr_name = f"Button {_BUTTON_NUMBER[position]}" + (
+            " long" if press == "long" else ""
+        )
         self._slot = slot
         self._current = "disabled"
 

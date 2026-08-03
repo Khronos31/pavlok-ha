@@ -392,23 +392,48 @@ BTN_ACT_DISABLE = bytes.fromhex("ff")
 # are exactly what the write command takes, so one codec serves both directions.
 BTN_READ = bytes.fromhex("0101")
 BTN_READ_REPLY = 0x01
+# The app offers one to five repeats for a stimulus assignment.
+BTN_STIM_COUNTS = range(1, 6)
+_BTN_FIXED = {
+    "disabled": BTN_ACT_DISABLE,
+    "timer": BTN_ACT_TIMER,
+    "stopwatch": BTN_ACT_STOPWATCH,
+    "sleep_tracking": BTN_ACT_SLEEP,
+}
+# One select option per distinct payload the device can hold, because a slot
+# stores a single value: the repeat count is part of the assignment, not a
+# separate setting.
+BTN_OPTIONS = (
+    ["disabled"]
+    + [
+        f"{kind}_{count}"
+        for kind in (STIM_VIBE, STIM_BEEP, STIM_ZAP)
+        for count in BTN_STIM_COUNTS
+    ]
+    + ["timer", "stopwatch", "sleep_tracking"]
+)
+
+
+def btn_action_bytes(option: str) -> bytes:
+    """Encode a select option as an assignment payload."""
+    if option in _BTN_FIXED:
+        return _BTN_FIXED[option]
+    kind, _, count = option.rpartition("_")
+    return btn_action_stim(kind, int(count))
 
 
 def parse_btn_action(action: bytes) -> str:
     """Map an assignment payload back to a select option, or "" when unknown."""
-    if action == BTN_ACT_DISABLE:
-        return "disabled"
-    if action == BTN_ACT_STOPWATCH:
-        return "stopwatch"
-    if action == BTN_ACT_TIMER:
-        return "timer"
-    if action == BTN_ACT_SLEEP:
-        return "sleep_tracking"
+    for option, payload in _BTN_FIXED.items():
+        if action == payload:
+            return option
     for kind in (STIM_VIBE, STIM_BEEP, STIM_ZAP):
-        # The count lives in the low bits of byte 1, so compare everything else.
         reference = btn_action_stim(kind)
-        if len(action) == len(reference) and action[0] == reference[0]:
-            return kind
+        if len(action) != len(reference) or action[0] != reference[0]:
+            continue
+        # Byte 1 is 0x40 | count; bit 6 marks the payload as a button assignment.
+        count = action[1] & 0x3F
+        return f"{kind}_{count}" if count in BTN_STIM_COUNTS else ""
     return ""
 
 
