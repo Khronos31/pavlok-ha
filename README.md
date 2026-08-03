@@ -15,6 +15,8 @@ of any kind.** Anyone within radio range (tens of metres) can connect and:
 
 - **read your full activity history** — steps, movement, and sleep start/end
   times, going back weeks (the device stores it internally),
+- **read a log of commands sent to the device**, which includes alarm names in
+  plain text,
 - **fire the device** — vibrate, beep, or **zap** you.
 
 This is a property of the *device*, not of this integration. This project simply
@@ -25,25 +27,28 @@ way to erase the on-device history** (not via the app, not via BLE).
 
 For that reason:
 
-- The **Zap** button and `pavlok.stimulate` with `type: zap` are **disabled by
-  default**. Enable them explicitly in the integration options if you want them.
+- `button.pavlok_zap` is created **disabled**. Enable it from the entity
+  settings if you want a one-press zap on your dashboard. The `pavlok.stimulate`
+  service can still send a zap, so automations remain possible without it.
 - Nothing in this integration fires a stimulus on its own.
 
 ## Features
 
 | Area | What you get |
 | --- | --- |
-| Stimulus | `button.pavlok_vibe` / `_beep` / `_zap` (zap off by default) + `pavlok.stimulate` service (choose type, intensity, count — the app can only send one repeat; BLE can send many) |
-| Sensors | activity (per-second & cumulative), steps, battery, RSSI, connection, last sleep (bed time / wake time / duration), next alarm, timer/stopwatch state |
+| Stimulus | `button.pavlok_vibe` / `_beep` / `_zap` plus a `number` pair per type for intensity and repeats, and the `pavlok.stimulate` service. The app can only send one repeat; BLE accepts up to 127 |
+| Alarms | `sensor.pavlok_alarms` lists what is stored on the device — time, days, name, each stimulus, snooze and dismissal method. `pavlok.set_alarm` / `pavlok.delete_alarm` write to it. Alarms live on the device, so they still fire with the phone and Home Assistant switched off |
+| Sleep | `switch.pavlok_sleep_detection` (automatic detection) and `switch.pavlok_sleep_recording` (start/stop a session). `sensor.pavlok_last_sleep` gives bed time, wake time and duration, and updates by itself when a recording ends |
+| Timer | `pavlok.timer` saves, starts, pauses, resumes and resets the device-side timer or stopwatch. `sensor.pavlok_timer` shows the elapsed time and the stored setup; `sensor.pavlok_timer_finishes` gives the end time, which Home Assistant renders as a live countdown |
+| Buttons | `select` per slot assigns the three physical buttons (short and long press), including the repeat count. The assignments are read back from the device, so changes made in the official app show up too |
 | Events | `event.pavlok_button` — top/mid/bottom × short/long, as automation triggers |
-| Alarms | read the on-device alarm list; set/delete alarms (survive phone & HA being off) via services; a `time` + `switch` pair for your usual wake alarm |
-| Buttons | assign the three physical buttons (`select` per slot) |
-| Timer | start a device-side timer; `sensor.pavlok_timer` shows what's running |
-| History | `pavlok.sync_history` pulls stored records into Home Assistant statistics |
+| Sensors | activity, steps, battery, connection, and RSSI with a per-proxy breakdown |
+| History | fetched automatically when a sleep recording ends and once per connection; `pavlok.sync_history` forces it. Past sleep durations go to long-term statistics |
 
 ## Requirements
 
-- Home Assistant 2024.8 or newer
+- Home Assistant 2026.7 or newer (developed and tested against 2026.7.4;
+  earlier versions may work but are untested)
 - A Bluetooth adapter on the HA host, or an ESPHome device running
   `bluetooth_proxy` within range of the Pavlok. The Pavlok's radio is weak, so
   proxy placement matters.
@@ -68,17 +73,28 @@ Two things are deliberately *not* exposed:
 
 - **Sleep score** — the app computes it rather than storing it on the device, so
   there is nothing to read.
-- **Sleep stages** (REM / light / deep) — the per-session record contains a
-  trailing block that is not decoded yet.
+- **Sleep stages** (REM / light / deep) — not found in the device's records. A
+  trailing block of each sleep record is still undecoded, but the stages appear
+  to be derived by the app rather than stored.
 
 Hand detection is not exposed either; the setting can be toggled but the feature
 did not behave as expected during testing.
 
+The bedtime window in the app's *sleep tracking time range* screen is never sent
+to the device — only "detect sleep" on or off is. The times are used by the app
+when it interprets the recorded data.
+
 ## Status
 
-Early release. The protocol is mapped for stimulus, time sync, history, alarms,
-timers, button assignment and button events. Not yet verified on a live device:
-alarm writes and timer start. See the source for details.
+Working, but young. Reading and writing have both been exercised on a real
+device: alarms (list, add, delete), stimulus, button assignment, timer setup and
+control, sleep tracking, and history transfer.
+
+Transfers over an ESPHome proxy drop notifications, so history is fetched one
+block at a time and retried. A direct Bluetooth adapter is noticeably faster and
+more reliable.
+
+There are no automated tests yet.
 
 ## License
 
