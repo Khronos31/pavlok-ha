@@ -85,6 +85,17 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _actrl(mode: int) -> bytes:
+    """A-Ctrl フレーム: <モード> 00 <プロファイル名>。
+
+    モードとプロファイル名の間の 0x00 は必須。これを落とすとデバイスは要求を
+    黙って無視し、読み出しの応答が永久に返らない（2026-08-03 実測）。
+    """
+    return bytes([mode, 0x00]) + ALARM_PROFILE
+
+
 _RECONNECT_MAX_SECONDS: Final = 60
 _STANDARD_DEVICE_INFO: Final = {
     "00002a29-0000-1000-8000-00805f9b34fb": "manufacturer",
@@ -130,7 +141,6 @@ class PavlokConnection:
         self._alarm_done: asyncio.Event | None = None
         self._alarm_setter: asyncio.TimerHandle | None = None
         self._known_alarm_records: dict[str, bytes] = {}
-
 
     @property
     def connect_enabled(self) -> bool:
@@ -251,6 +261,9 @@ class PavlokConnection:
             # (btsnoopで確認、2026-08-02)。A-Write/A-Notify ではない——そちらを購読して
             # いた間、応答は永久に届かず一覧が常に空だった。
             (CHR_ACTRL, self._alarm_notify),
+            # 書き込み手順は A-Write のCCCD有効化を含む。応答の収集先ではないので
+            # 読み出しバッファを汚さないよう別コールバックにする。
+            (CHR_AWRITE, self._alarm_write_ack),
             (CHR_FILES, self._history_notify),
             (CHR_ALARM_TIME, self._alarm_time_notify),
         ):
@@ -443,6 +456,10 @@ class PavlokConnection:
         self.data[key] = value
         self._publish()
 
+    def _alarm_write_ack(self, _: Any, payload: bytearray) -> None:
+        """A-Write reports 00000000 on accept and 02000000 on reject."""
+        _LOGGER.debug("Pavlok alarm write acknowledgement: %s", payload.hex())
+
     def _alarm_notify(self, _: Any, payload: bytearray) -> None:
         if self._alarm_done:
             self._alarm_data.extend(payload)
@@ -467,7 +484,7 @@ class PavlokConnection:
         self._alarm_data = bytearray()
         self._alarm_done = asyncio.Event()
         try:
-            await self._write(CHR_ACTRL, bytes([ACTRL_READ]) + ALARM_PROFILE)
+            await self._write(CHR_ACTRL, _actrl(ACTRL_READ))
             await asyncio.wait_for(self._alarm_done.wait(), timeout=5)
             payload = bytes(self._alarm_data)
             if not payload:
@@ -578,10 +595,10 @@ class PavlokConnection:
         self, records: list[tuple[str, bytes]]
     ) -> None:
         message = seal_alarm_message(b"".join(raw for _, raw in records))
-        await self._write(CHR_ACTRL, bytes([ACTRL_WRITE_BEGIN]) + ALARM_PROFILE)
+        await self._write(CHR_ACTRL, _actrl(ACTRL_WRITE_BEGIN))
         for offset in range(0, len(message), 20):
             await self._write(CHR_AWRITE, message[offset : offset + 20])
-        await self._write(CHR_ACTRL, bytes([ACTRL_COMMIT]) + ALARM_PROFILE)
+        await self._write(CHR_ACTRL, _actrl(ACTRL_COMMIT))
         self._known_alarm_records = dict(records)
         self.data["alarms"] = [{"id": alarm_id} for alarm_id, _ in records]
         self._publish()
