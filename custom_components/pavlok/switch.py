@@ -20,7 +20,14 @@ async def async_setup_entry(
 
 
 class PavlokConnectionSwitch(PavlokEntity, SwitchEntity):
-    _attr_name = "Connection"
+    """The device's main entity: everything else depends on this connection.
+
+    ``_attr_name = None`` makes the displayed name the device name itself, which is
+    how Home Assistant identifies a device's primary entity and lists it above the
+    other controls.
+    """
+
+    _attr_name = None
 
     def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
         super().__init__(manager, entry, "connection")
