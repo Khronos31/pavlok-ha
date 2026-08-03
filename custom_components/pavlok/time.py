@@ -21,7 +21,7 @@ async def async_setup_entry(
 
 
 class PavlokWakeTime(PavlokEntity, TimeEntity, RestoreEntity):
-    _attr_name = "Wake"
+    _attr_name = "Alarm time"
 
     def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
         super().__init__(manager, entry, "wake_time")

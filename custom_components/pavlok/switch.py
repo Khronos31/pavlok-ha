@@ -48,7 +48,9 @@ class PavlokConnectionSwitch(PavlokEntity, SwitchEntity):
 
 
 class PavlokWakeSwitch(PavlokEntity, SwitchEntity):
-    _attr_name = "Wake"
+    """Enable/disable the single alarm this integration reserves for itself."""
+
+    _attr_name = "Alarm"
 
     def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
         super().__init__(manager, entry, "wake")
