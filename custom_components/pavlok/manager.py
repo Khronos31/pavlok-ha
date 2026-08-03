@@ -531,9 +531,13 @@ class PavlokConnection:
             if tag != "HA":
                 continue
             fields = self._split_tlvs(value)
+            # ID は2バイトのリトルエンディアン整数（正本の実測: ID len=2 0100）。
+            # ASCII文字列として扱うと '\x02\x00' のような生バイトが表に出る。
             alarm_id = next(
                 (
-                    field.decode(errors="replace")
+                    str(struct.unpack_from("<H", field, 0)[0])
+                    if len(field) == 2
+                    else field.decode(errors="replace")
                     for name, field, _ in fields
                     if name == "ID"
                 ),
@@ -571,7 +575,7 @@ class PavlokConnection:
             "puzzle": AO_UNLOCK_PUZZLE,
         }[values.get("unlock", "none")]
         body = (
-            tlv("ID", alarm_id.encode())
+            tlv("ID", struct.pack("<H", int(alarm_id)))
             + tlv("NM", values.get("name", "Alarm").encode()[:64])
             + tlv("TM", tm)
             + tlv("AO", bytes([unlock]))
