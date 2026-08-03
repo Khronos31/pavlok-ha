@@ -347,6 +347,9 @@ AO_SMART = 0x40           # smart alarm (pairs with SM tag)
 # un-dismissable alarm on the real device.
 
 # SN (snooze) bitfield: bit0 = snooze enabled, bit1 = snooze-zap.
+# WD は画面上の対応項目が見つかっていないが、実機のレコードは常に 30 だった。
+ALARM_WD_DEFAULT = 30
+
 SN_SNOOZE = 0x01
 SN_SNOOZE_ZAP = 0x02
 
@@ -362,6 +365,25 @@ def crc16_ccitt_false(data: bytes) -> int:
 
 def tlv(tag: str, body: bytes) -> bytes:
     return tag.encode("ascii") + struct.pack("<H", len(body)) + body
+
+
+def bcd(value: int) -> int:
+    return ((value // 10) << 4) | (value % 10)
+
+
+def alarm_stimulus_bytes(kind: str, intensity: int, count: int) -> bytes:
+    """Build the MC/PC/ZC payload carried inside an alarm.
+
+    Same shape as a fire-now stimulus but the two trailing bytes are 0xFA rather
+    than 0x16, and a disabled stimulus is written with its enable bit cleared
+    instead of being left out.
+    """
+    enabled = count > 0 and intensity > 0
+    head = (0x80 if enabled else 0x00) | (max(1, min(127, count)) & 0x7F)
+    intensity = max(0, min(100, int(intensity)))
+    if kind == STIM_ZAP:
+        return bytes([head, intensity])
+    return bytes([head, 0x0C, intensity, 0xFA, 0xFA])
 
 
 def seal_alarm_message(ah_body_without_crc: bytes) -> bytes:

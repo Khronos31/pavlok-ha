@@ -82,9 +82,35 @@ set_alarm:
           min: 1
           max: 127
     unlock:
+      description: How the alarm has to be dismissed.
       selector:
         select:
           options: [none, jacks, qr, puzzle]
+    jacks:
+      description: Number of jumping jacks, used when unlock is "jacks".
+      selector:
+        number:
+          min: 1
+          max: 255
+    interval:
+      description: Seconds between repeats until the alarm is dismissed.
+      selector:
+        number:
+          min: 1
+          max: 65535
+          unit_of_measurement: s
+    snooze:
+      description: Allow snoozing.
+      selector:
+        boolean:
+    snooze_zap:
+      description: Zap on snooze.
+      selector:
+        boolean:
+    light_sleep:
+      description: Wake during light sleep near the set time.
+      selector:
+        boolean:
 delete_alarm:
   name: Delete alarm
   description: Remove one alarm and write the remaining device alarm list.

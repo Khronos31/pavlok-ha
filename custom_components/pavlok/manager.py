@@ -39,6 +39,8 @@ from .const import (
     ACTRL_WRITE_BEGIN,
     ALARM_ENABLED_BIT,
     ALARM_PROFILE,
+    ALARM_WD_DEFAULT,
+    AO_LIGHT_SLEEP,
     AO_UNLOCK_JACKS,
     AO_UNLOCK_NONE,
     AO_UNLOCK_PUZZLE,
@@ -66,6 +68,8 @@ from .const import (
     DEVICE_INFO_SVC,
     DOMAIN,
     FILES_TYPE_COARSE,
+    SN_SNOOZE,
+    SN_SNOOZE_ZAP,
     SLEEP_AUTO_OFF,
     SLEEP_AUTO_ON,
     STIM_BEEP,
@@ -82,6 +86,8 @@ from .const import (
     TIMER_OP_RESUME,
     TIMER_OP_START,
     TIMER_REPEAT,
+    alarm_stimulus_bytes,
+    bcd,
     btn_action_bytes,
     files_command,
     find_sleep_records,
@@ -815,7 +821,12 @@ class PavlokConnection:
         return records
 
     def _build_alarm_record(self, values: dict[str, Any], alarm_id: str) -> bytes:
-        """Encode a Pavlok HA alarm record using the documented TLV primitives."""
+        """Encode one alarm exactly as the device stores it.
+
+        Field order, tag names and the BCD clock all follow a record read back from
+        the hardware.  Every stimulus is always present with its enable bit cleared
+        when unused, because that is what the device itself writes.
+        """
         alarm_time: dt_time = values["time"]
         day_bits = 0
         for day in values.get("days", []):
@@ -828,45 +839,60 @@ class PavlokConnection:
                 "fri": 32,
                 "sat": 64,
             }.get(day.lower()[:3], 0)
-        tm = bytes(
-            [
-                alarm_time.minute,
-                alarm_time.hour,
-                0,
-                day_bits | (ALARM_ENABLED_BIT if values.get("enabled", True) else 0),
-            ]
-        )
+        if values.get("enabled", True):
+            day_bits |= ALARM_ENABLED_BIT
         unlock = {
             "none": AO_UNLOCK_NONE,
             "jacks": AO_UNLOCK_JACKS,
             "qr": AO_UNLOCK_QR,
             "puzzle": AO_UNLOCK_PUZZLE,
         }[values.get("unlock", "none")]
+        if values.get("light_sleep"):
+            # 解除方法とは別のビット。ES/SM を伴う昇圧・スマートは書式未確認なので出さない。
+            unlock |= AO_LIGHT_SLEEP
+        snooze = 0
+        if values.get("snooze", True):
+            snooze |= SN_SNOOZE
+        if values.get("snooze_zap"):
+            snooze |= SN_SNOOZE_ZAP
         body = (
-            tlv("ID", struct.pack("<H", int(alarm_id)))
-            + tlv("NM", values.get("name", "Alarm").encode()[:64])
-            + tlv("TM", tm)
+            tlv("AN", values.get("name", "Alarm").encode()[:64])
+            + tlv(
+                "TM",
+                bytes(
+                    [
+                        bcd(0),
+                        bcd(alarm_time.minute),
+                        bcd(alarm_time.hour),
+                        day_bits,
+                    ]
+                ),
+            )
+            + tlv("WD", bytes([ALARM_WD_DEFAULT]))
+            + tlv("WI", struct.pack("<H", int(values.get("interval", 15))))
+            + tlv("SN", bytes([snooze]))
             + tlv("AO", bytes([unlock]))
         )
-        for enabled, kind in (
-            (values.get("vibe"), STIM_VIBE),
-            (values.get("beep"), STIM_BEEP),
-            (values.get("zap"), STIM_ZAP),
+        if unlock == AO_UNLOCK_JACKS:
+            body += tlv("JL", bytes([int(values.get("jacks", 20)) & 0xFF]))
+        for kind, (outer, inner) in (
+            (STIM_VIBE, ("MH", "MC")),
+            (STIM_BEEP, ("PH", "PC")),
+            (STIM_ZAP, ("ZH", "ZC")),
         ):
-            if enabled:
-                tag = {STIM_VIBE: "VI", STIM_BEEP: "BE", STIM_ZAP: "ZA"}[kind]
-                body += tlv(
-                    tag,
-                    stimulus_bytes(
-                        kind, values[f"{kind}_intensity"], values[f"{kind}_count"]
-                    ),
-                )
+            count = int(values.get(f"{kind}_count", 1)) if values.get(kind) else 0
+            intensity = int(values.get(f"{kind}_intensity", 0)) if values.get(kind) else 0
+            body += tlv(outer, tlv(inner, alarm_stimulus_bytes(kind, intensity, count)))
+        body += tlv("ID", struct.pack("<H", int(alarm_id)))
         return tlv("HA", body)
 
     async def _async_write_alarm_records(
         self, records: list[tuple[str, bytes]]
     ) -> None:
-        message = seal_alarm_message(b"".join(raw for _, raw in records))
+        # AH の中身は「プロファイル名 + レコード群」。AP を落とすとデバイスは拒否する。
+        message = seal_alarm_message(
+            tlv("AP", ALARM_PROFILE) + b"".join(raw for _, raw in records)
+        )
         await self._write(CHR_ACTRL, _actrl(ACTRL_WRITE_BEGIN))
         for offset in range(0, len(message), 20):
             await self._write(CHR_AWRITE, message[offset : offset + 20])

@@ -159,6 +159,15 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Optional("unlock", default="none"): vol.In(
                     ["none", "jacks", "qr", "puzzle"]
                 ),
+                vol.Optional("jacks", default=20): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=255)
+                ),
+                vol.Optional("interval", default=15): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=65535)
+                ),
+                vol.Optional("snooze", default=True): cv.boolean,
+                vol.Optional("snooze_zap", default=False): cv.boolean,
+                vol.Optional("light_sleep", default=False): cv.boolean,
             }
         ),
     )
