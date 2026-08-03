@@ -96,20 +96,23 @@ delete_alarm:
 timer:
   name: Timer
   description: >-
-    Start, pause, resume or reset the device-side timer or stopwatch.
-    Only "start" uses the setup fields below.
+    Save, start, pause, resume or reset the device-side timer or stopwatch.
+    Saving and starting are separate on the device: "save" stores the settings
+    without running them, and "start" without a duration runs whatever is stored.
   fields:
     action:
       required: true
       selector:
         select:
-          options: [start, pause, resume, reset]
+          options: [start, save, pause, resume, reset]
     type:
       selector:
         select:
           options: [timer, stopwatch]
     seconds:
-      description: Countdown length. Required for "start"; a stopwatch uses 0.
+      description: >-
+        Countdown length; a stopwatch uses 0. Required for "save". Omit it with
+        "start" to run the settings already stored on the device.
       selector:
         number:
           min: 0

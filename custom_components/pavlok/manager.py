@@ -417,15 +417,20 @@ class PavlokConnection:
     ) -> None:
         """Drive the device-side timer or stopwatch.
 
-        ``start`` writes the setup command and then the start opcode; the other
-        actions are opcodes only, so they need none of the setup parameters.
+        Saving and starting are separate commands on the device: the app writes the
+        setup command alone when the user only saves, and follows it with the start
+        opcode about 100 ms later when the user starts (btsnoop, 2026-08-03).
+        ``start`` therefore saves first only when given a duration, so it can also
+        start whatever is already stored.
         """
-        if action == "start":
-            if seconds is None:
-                raise HomeAssistantError("seconds is required to start a timer")
+        if action in ("save", "start") and seconds is not None:
             await self._async_write_timer_setup(
                 kind, seconds, stimulus, interval, repeat
             )
+        elif action == "save":
+            raise HomeAssistantError("seconds is required to save a timer")
+        if action == "save":
+            return
         operation = {
             "start": TIMER_OP_START,
             "pause": TIMER_OP_PAUSE,

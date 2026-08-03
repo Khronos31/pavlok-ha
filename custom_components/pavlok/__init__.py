@@ -175,7 +175,9 @@ def _register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             common
             | {
-                vol.Required("action"): vol.In(["start", "pause", "resume", "reset"]),
+                vol.Required("action"): vol.In(
+                    ["start", "save", "pause", "resume", "reset"]
+                ),
                 vol.Optional("type", default="timer"): vol.In(["timer", "stopwatch"]),
                 # start のときだけ必要。他の操作はオペコードのみで完結する。
                 vol.Optional("seconds"): vol.All(
