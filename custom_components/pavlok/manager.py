@@ -353,8 +353,8 @@ class PavlokConnection:
         action_bytes = {
             "stopwatch": BTN_ACT_STOPWATCH,
             "timer": BTN_ACT_TIMER,
-            "sleep": BTN_ACT_SLEEP,
-            "disable": BTN_ACT_DISABLE,
+            "sleep_tracking": BTN_ACT_SLEEP,
+            "disabled": BTN_ACT_DISABLE,
             "vibe": btn_action_stim(STIM_VIBE),
             "beep": btn_action_stim(STIM_BEEP),
             "zap": btn_action_stim(STIM_ZAP),

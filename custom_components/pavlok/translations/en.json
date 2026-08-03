@@ -14,5 +14,20 @@
         "data": {"keep_connected": "Keep Bluetooth connection"}
       }
     }
+  },
+  "entity": {
+    "select": {
+      "button_assignment": {
+        "state": {
+          "disabled": "Disabled",
+          "vibe": "Vibe",
+          "beep": "Beep",
+          "zap": "Zap",
+          "timer": "Timer",
+          "stopwatch": "Stopwatch",
+          "sleep_tracking": "Sleep tracking"
+        }
+      }
+    }
   }
 }

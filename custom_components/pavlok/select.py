@@ -12,7 +12,17 @@ from .const import BTN_SLOT
 from .entity import PavlokEntity
 from .manager import PavlokConnection
 
-_OPTIONS = ["stopwatch", "timer", "sleep", "zap", "beep", "vibe", "disable"]
+# 状態値は小文字のまま保ち、表示名は translations 側で与える。
+# こうすると見た目を変えても自動化が参照する状態文字列が動かない。
+_OPTIONS = [
+    "disabled",
+    "vibe",
+    "beep",
+    "zap",
+    "timer",
+    "stopwatch",
+    "sleep_tracking",
+]
 
 
 async def async_setup_entry(
@@ -32,6 +42,7 @@ class PavlokButtonAssignment(PavlokEntity, SelectEntity, RestoreEntity):
 
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = _OPTIONS
+    _attr_translation_key = "button_assignment"
 
     def __init__(
         self,
@@ -44,7 +55,7 @@ class PavlokButtonAssignment(PavlokEntity, SelectEntity, RestoreEntity):
         super().__init__(manager, entry, f"button_{position}_{press}")
         self._attr_name = f"Button {position} {press}"
         self._slot = slot
-        self._current = "disable"
+        self._current = "disabled"
 
     @property
     def current_option(self) -> str:
