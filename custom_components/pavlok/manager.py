@@ -894,16 +894,26 @@ class PavlokConnection:
             raise HomeAssistantError(
                 "Pavlok returned an incomplete history file"
             ) from err
+        blocks = list(iter_blocks(data))
         records = [
             (start, duration)
-            for _, _, _, _, body in iter_blocks(data)
+            for _, _, _, _, body in blocks
             for start, duration, _ in find_sleep_records(body)
         ]
         _LOGGER.debug(
-            "Pavlok history: %d of %d announced bytes, %d sleep records",
+            "Pavlok history: %d of %d announced bytes, %d blocks, %d sleep records",
             len(data),
             total,
+            len(blocks),
             len(records),
+        )
+        _LOGGER.debug("Pavlok history head: %s", data[:32].hex())
+        _LOGGER.debug(
+            "Pavlok history blocks: %s",
+            [
+                (hex(mark), btype, index, start_unix, len(body))
+                for mark, btype, index, start_unix, body in blocks
+            ],
         )
         if not records:
             return
