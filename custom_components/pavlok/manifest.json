@@ -1,7 +1,7 @@
 {
   "domain": "pavlok",
   "name": "Pavlok",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "documentation": "https://github.com/Khronos31/pavlok-ha",
   "issue_tracker": "https://github.com/Khronos31/pavlok-ha/issues",
   "codeowners": [

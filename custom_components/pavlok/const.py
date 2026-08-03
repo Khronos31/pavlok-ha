@@ -206,15 +206,37 @@ def parse_file_header(data: bytes):
     return struct.unpack_from("<HIII", data, 0)
 
 
+BLOCK_MAX_BODY = 4096
+
+
+def _is_block_header(data: bytes, p: int) -> bool:
+    """Test whether a block header plausibly starts at ``p``."""
+    if p + 12 > len(data):
+        return False
+    mark, _, ln, _, start_unix = struct.unpack_from("<BBHII", data, p)
+    return (
+        mark in (BLOCK_MARK_MORE, BLOCK_MARK_LAST)
+        and 0 < ln <= BLOCK_MAX_BODY
+        and _UNIX_MIN <= start_unix <= _UNIX_MAX
+    )
+
+
 def iter_blocks(data: bytes):
-    """Yield (mark, type, index, start_unix, body) for each block after the 14-byte header."""
+    """Yield (mark, type, index, start_unix, body) for each block after the header.
+
+    A weak BLE link drops notifications, which leaves a hole in the middle of the
+    file and pushes every following block out of alignment.  Stopping at the hole
+    would discard the newest blocks, which are exactly the ones a caller wants, so
+    scan forward for the next plausible header instead.
+    """
     p = 14
-    while p + 12 <= len(data):
+    n = len(data)
+    while p + 12 <= n:
+        if not _is_block_header(data, p):
+            p += 1
+            continue
         mark, btype, ln, index, start_unix = struct.unpack_from("<BBHII", data, p)
-        if mark not in (BLOCK_MARK_MORE, BLOCK_MARK_LAST):
-            break
-        body = data[p + 12:p + 12 + ln]
-        yield (mark, btype, index, start_unix, body)
+        yield (mark, btype, index, start_unix, data[p + 12:p + 12 + ln])
         p += 12 + ln
 
 
