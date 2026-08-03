@@ -961,6 +961,7 @@ class PavlokConnection:
         self, records: list[tuple[int, int]]
     ) -> None:
         """Record past sleep minutes so they survive the recorder's purge."""
+        from homeassistant.components.recorder.models import StatisticMeanType
         from homeassistant.components.recorder.statistics import (
             async_add_external_statistics,
         )
@@ -982,7 +983,9 @@ class PavlokConnection:
             ),
             "name": f"{self.name} sleep duration",
             "unit_of_measurement": "min",
+            # has_mean は 2026.11 で廃止。両方置いておけば新旧どちらでも通る。
             "has_mean": True,
+            "mean_type": StatisticMeanType.ARITHMETIC,
             "has_sum": False,
             "unit_class": None,
         }
