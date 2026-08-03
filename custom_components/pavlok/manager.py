@@ -121,6 +121,9 @@ _FILE_HEADER_BYTES: Final = 14
 _HISTORY_IDLE_SECONDS: Final = 10
 _BLOCK_TIMEOUT: Final = 60
 _BLOCK_ATTEMPTS: Final = 3
+# 接続は電波が弱いと張り直しを繰り返す。取得は1分ほどBLEを占有するので、
+# 接続を機に走らせる分には下限を設ける（記録終了を機にする分は制限しない）。
+_HISTORY_MIN_INTERVAL: Final = 1800
 _STANDARD_DEVICE_INFO: Final = {
     "00002a29-0000-1000-8000-00805f9b34fb": "manufacturer",
     "00002a24-0000-1000-8000-00805f9b34fb": "model",
@@ -175,6 +178,7 @@ class PavlokConnection:
         self._alarm_done: asyncio.Event | None = None
         self._alarm_setter: asyncio.TimerHandle | None = None
         self._known_alarm_records: dict[str, bytes] = {}
+        self._last_history_sync: float | None = None
 
     @property
     def connect_enabled(self) -> bool:
@@ -358,6 +362,7 @@ class PavlokConnection:
             await self.async_refresh_timer_config()
         except Exception:  # noqa: BLE001 - never let a read stop the connection
             _LOGGER.debug("Pavlok stored settings unavailable", exc_info=True)
+        self._async_sync_history_soon(force=False)
 
     def _disconnected(self, _: BleakClient) -> None:
         self.hass.loop.call_soon_threadsafe(self._mark_disconnected)
@@ -555,7 +560,11 @@ class PavlokConnection:
             self.data["timer_finishes_at"] = self._timer_finish(kind, elapsed, running)
         sleep = parse_sleep_state(payload)
         if sleep is not None:
+            was_recording = self.data["sleep_tracking"]
             self.data["sleep_auto"], self.data["sleep_tracking"] = sleep
+            if was_recording and not self.data["sleep_tracking"]:
+                # 記録が終わった直後がレコードの書かれた直後。ここで引くのが最短。
+                self._async_sync_history_soon(force=True)
         self._publish()
 
     def _timer_finish(self, kind: str, elapsed: int, running: bool) -> datetime | None:
@@ -944,6 +953,32 @@ class PavlokConnection:
         )
         await self._async_write_alarm_records(retained)
         self._publish()
+
+    def _async_sync_history_soon(self, *, force: bool) -> None:
+        """Kick off a history read in the background.
+
+        Reading holds the link for about a minute, so a reconnect loop must not be
+        able to start one every time it succeeds.
+        """
+        now = monotonic()
+        if (
+            not force
+            and self._last_history_sync is not None
+            and now - self._last_history_sync < _HISTORY_MIN_INTERVAL
+        ):
+            return
+        self._last_history_sync = now
+        self.entry.async_create_background_task(
+            self.hass,
+            self._async_sync_history_quietly(),
+            name=f"pavlok {self.address} history",
+        )
+
+    async def _async_sync_history_quietly(self) -> None:
+        try:
+            await self.async_sync_history()
+        except Exception:  # noqa: BLE001 - a background read must not surface errors
+            _LOGGER.debug("Pavlok background history sync failed", exc_info=True)
 
     async def _async_read_block(self, index: int) -> bytes | None:
         """Fetch one history block, retrying because a lost notification is fatal.

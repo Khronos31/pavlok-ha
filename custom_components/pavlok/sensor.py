@@ -13,6 +13,8 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
 from .entity import PavlokEntity
 from .manager import PavlokConnection
@@ -132,14 +134,32 @@ class PavlokRssiSensor(PavlokEntity, SensorEntity):
         }
 
 
-class PavlokLastSleepSensor(PavlokEntity, SensorEntity):
-    """Latest parsed sleep interval; past intervals live in recorder statistics."""
+class PavlokLastSleepSensor(PavlokEntity, SensorEntity, RestoreEntity):
+    """Latest parsed sleep interval; past intervals live in recorder statistics.
+
+    Reading history takes about a minute of exclusive Bluetooth, so the last known
+    night is restored on startup rather than fetched again straight away.
+    """
 
     _attr_name = "Last sleep"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
         super().__init__(manager, entry, "last_sleep")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        previous = await self.async_get_last_state()
+        if not previous or self.manager.data["last_sleep"]:
+            return
+        try:
+            self.manager.data["last_sleep"] = {
+                "start": dt_util.parse_datetime(previous.state),
+                "end": dt_util.parse_datetime(previous.attributes["wake_time"]),
+                "duration": int(previous.attributes["duration_minutes"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return
 
     @property
     def native_value(self) -> datetime | None:
