@@ -399,14 +399,28 @@ class PavlokConnection:
     async def async_start_timer(
         self, seconds: int, stimulus: str, interval: int
     ) -> None:
-        """Start the device-side timer (an explicit service action only)."""
-        duration = varlen_encode(seconds)
+        """Configure the device-side timer (an explicit service action only).
+
+        Verified byte-for-byte against three captured app writes::
+
+            22 0a00 12 f5 02 0100   f004 03 2a 05 80   ストップウォッチ・ザップ・5秒
+            22 0a00 13 f5 02 013c   f004 01 2a 0a 80   1分タイマー・振動・10秒
+            22 0b00 13 f5 03 0181d8 f004 01 2a 0a 80   10分タイマー・振動・10秒
+
+        Two details are easy to get wrong: the duration is ``01`` followed by the
+        variable-length integer and the length byte counts that ``01``, and the
+        trailing flag sits outside the u16 body length.
+        """
+        duration = b"\x01" + varlen_encode(seconds)
         body = (
             bytes([TIMER_KIND_TIMER, 0xF5, len(duration)])
             + duration
-            + bytes([0xF0, 0x04, STIM_CODE[stimulus], 0x2A, interval, 0x80])
+            + bytes([0xF0, 0x04, STIM_CODE[stimulus], 0x2A, interval])
         )
-        await self._write(CHR_CMD7, bytes([0x22]) + struct.pack("<H", len(body)) + body)
+        await self._write(
+            CHR_CMD7,
+            bytes([0x22]) + struct.pack("<H", len(body)) + body + bytes([0x80]),
+        )
 
     def _event_notify(self, _: Any, payload: bytearray) -> None:
         self.hass.loop.call_soon_threadsafe(self._process_event, bytes(payload))
