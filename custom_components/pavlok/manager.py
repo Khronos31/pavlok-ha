@@ -182,7 +182,7 @@ class PavlokConnection:
         )
         self._async_bluetooth_update()
         if self._connect_enabled:
-            self._task = self.hass.async_create_task(self._connection_loop())
+            self._task = self._async_start_connection_loop()
 
     async def async_stop(self) -> None:
         """Cancel reconnecting, unsubscribe scanner updates, and release the radio."""
@@ -242,8 +242,22 @@ class PavlokConnection:
                 self._task = None
             await self._async_disconnect()
         elif not self._task:
-            self._task = self.hass.async_create_task(self._connection_loop())
+            self._task = self._async_start_connection_loop()
         self._publish()
+
+    def _async_start_connection_loop(self) -> asyncio.Task[None]:
+        """Run the reconnect loop as a background task.
+
+        A plain ``async_create_task`` is awaited during startup, so an unreachable
+        device would hold Home Assistant's bootstrap open for as long as it keeps
+        retrying.  Background tasks do not block startup and are cancelled with the
+        config entry.
+        """
+        return self.entry.async_create_background_task(
+            self.hass,
+            self._connection_loop(),
+            name=f"pavlok {self.address} connection",
+        )
 
     async def _connection_loop(self) -> None:
         """Maintain a link while requested, with a bounded exponential backoff."""
