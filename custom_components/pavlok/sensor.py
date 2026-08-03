@@ -223,10 +223,13 @@ class PavlokTimerFinishSensor(PavlokEntity, SensorEntity):
 
 
 class PavlokAlarmsSensor(PavlokEntity, SensorEntity):
-    """Small overview of alarms; detailed raw protocol data is intentionally hidden."""
+    """What the device will do and when, not how healthy it is.
+
+    Diagnostic is for judging whether the hardware is well; alarms are the point of
+    the device, so they belong with the ordinary readings.
+    """
 
     _attr_name = "Alarms"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
         super().__init__(manager, entry, "alarms")
