@@ -32,6 +32,9 @@ set_alarm:
       selector:
         time:
     days:
+      description: >-
+        Days the alarm repeats on. Leave empty for a one-shot alarm that fires at
+        the next occurrence of the given time.
       selector:
         select:
           multiple: true
