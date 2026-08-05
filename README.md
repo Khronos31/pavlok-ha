@@ -37,12 +37,13 @@ For that reason:
 | Area | What you get |
 | --- | --- |
 | Stimulus | `button.pavlok_vibe` / `_beep` / `_zap` plus a `number` pair per type for intensity and repeats, and the `pavlok.stimulate` service. The app can only send one repeat; BLE accepts up to 127 |
-| Alarms | `sensor.pavlok_alarms` lists what is stored on the device — time, days, name, each stimulus, snooze and dismissal method. `pavlok.set_alarm` / `pavlok.delete_alarm` write to it. Alarms live on the device, so they still fire with the phone and Home Assistant switched off. `time.pavlok_alarm_time` + `switch.pavlok_alarm` drive one reserved alarm from the dashboard without writing an action |
+| Alarms | `sensor.pavlok_alarms` lists what is stored on the device — time, days, name, each stimulus, snooze and dismissal method — and `sensor.pavlok_next_alarm` gives the next one as a timestamp. `pavlok.set_alarm` / `pavlok.delete_alarm` write to it. Alarms live on the device, so they still fire with the phone and Home Assistant switched off. `time.pavlok_alarm_time` + `switch.pavlok_alarm` drive one reserved alarm from the dashboard without writing an action |
 | Sleep | `switch.pavlok_sleep_detection` (automatic detection) and `switch.pavlok_sleep_recording` (start/stop a session). `sensor.pavlok_last_sleep` gives bed time, wake time and duration, and updates by itself when a recording ends |
 | Timer | `pavlok.timer` saves, starts, pauses, resumes and resets the device-side timer or stopwatch. `sensor.pavlok_timer` shows the elapsed time and the stored setup; `sensor.pavlok_timer_finishes` gives the end time, which Home Assistant renders as a live countdown |
 | Buttons | `select` per slot assigns the three physical buttons (short and long press), including the repeat count. The assignments are read back from the device, so changes made in the official app show up too |
 | Events | `event.pavlok_button` — top/mid/bottom × short/long, as automation triggers |
 | Sensors | activity, steps, battery, connection, and RSSI with a per-proxy breakdown |
+| Radio | the switch named after the device holds the Bluetooth link open. Turn it off to release the radio — the device keeps running, but nothing can be read or written until it is turned back on |
 | History | fetched automatically when a sleep recording ends and once per connection; `pavlok.sync_history` forces it. Past sleep durations go to long-term statistics |
 
 ## Requirements
