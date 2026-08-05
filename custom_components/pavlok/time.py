@@ -25,24 +25,24 @@ class PavlokWakeTime(PavlokEntity, TimeEntity, RestoreEntity):
 
     def __init__(self, manager: PavlokConnection, entry: ConfigEntry) -> None:
         super().__init__(manager, entry, "wake_time")
-        self._value = time(7, 0)
-        manager.data["wake_time"] = self._value
+        manager.data.setdefault("wake_time", time(7, 0))
 
     @property
     def native_value(self) -> time:
-        return self._value
+        """The device's copy of the reserved alarm, once it has been read."""
+        return self.manager.data.get("wake_time") or time(7, 0)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        # 実機を読めていればそれが正。復元値で上書きしない。
+        if self.manager.data.get("wake_synced"):
+            return
         if previous := await self.async_get_last_state():
             try:
-                self._value = time.fromisoformat(previous.state)
-                self.manager.data["wake_time"] = self._value
+                self.manager.data["wake_time"] = time.fromisoformat(previous.state)
             except ValueError:
                 pass
 
     async def async_set_value(self, value: time) -> None:
-        self._value = value
-        self.manager.data["wake_time"] = value
         await self.manager.async_set_wake(wake_time=value)
         self.async_write_ha_state()

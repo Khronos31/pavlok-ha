@@ -331,7 +331,12 @@ AWRITE_OK = bytes.fromhex("00000000")
 AWRITE_REJECT = bytes.fromhex("02000000")  # CRC mismatch / malformed
 
 DOW_MON_FIRST = "月火水木金土日"  # for reference; bitmask below is Sunday-based
-# TM 4th byte: bit0=Sun bit1=Mon ... bit6=Sat, bit7=enabled. mask 0 => "no fire day".
+# TM 4th byte: bit0=Sun bit1=Mon ... bit6=Sat, bit7=enabled.
+# mask 0 with bit7 set is a ONE-SHOT alarm, not a dead one: the official app writes
+# exactly that for a non-repeating alarm (btsnoop 2026-08-05, TM=00 11 18 80), and the
+# device then reported it on the next-alarm characteristic (0x200a: 00 11 18 00 03 01 00
+# = 18:11, alarm id 1).  The app also omits unused PH/ZH tags in a record it creates,
+# while records it edits keep them; the device accepts both.
 ALARM_ENABLED_BIT = 0x80
 
 # AO (options) bitmask, confirmed 2026-08-02:
@@ -352,6 +357,13 @@ ALARM_WD_DEFAULT = 30
 
 SN_SNOOZE = 0x01
 SN_SNOOZE_ZAP = 0x02
+
+# The one alarm the time/switch pair drives.  Its id is pinned to the top of the u16
+# ID field rather than allocated: the official app counts up from 0, so nothing it
+# creates will ever land on this slot and overwrite the reserved alarm.  New alarms
+# from pavlok.set_alarm must therefore skip it when picking the next free id.
+RESERVED_ALARM_ID = "65535"
+RESERVED_ALARM_NAME = "Home Assistant Wake"
 
 
 def crc16_ccitt_false(data: bytes) -> int:

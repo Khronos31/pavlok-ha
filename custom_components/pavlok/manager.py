@@ -68,6 +68,8 @@ from .const import (
     DEVICE_INFO_SVC,
     DOMAIN,
     FILES_TYPE_COARSE,
+    RESERVED_ALARM_ID,
+    RESERVED_ALARM_NAME,
     SN_SNOOZE,
     SN_SNOOZE_ZAP,
     SLEEP_AUTO_OFF,
@@ -129,6 +131,9 @@ _HISTORY_IDLE_SECONDS: Final = 10
 _BLOCK_TIMEOUT: Final = 60
 _BLOCK_ATTEMPTS: Final = 3
 _EMPTY_ALARM_RETRIES: Final = 2
+# 自分でアラームを読み書きすると、その結果としても次アラーム通知が飛ぶ。直後の通知で
+# 読み直しても同じ内容が返るだけなので、この時間だけ再読み出しを見送る。
+_ALARM_RESYNC_QUIET: Final = 15
 # 接続は電波が弱いと張り直しを繰り返す。取得は1分ほどBLEを占有するので、
 # 接続を機に走らせる分には下限を設ける（記録終了を機にする分は制限しない）。
 _HISTORY_MIN_INTERVAL: Final = 1800
@@ -186,6 +191,12 @@ class PavlokConnection:
         self._alarm_done: asyncio.Event | None = None
         self._alarm_setter: asyncio.TimerHandle | None = None
         self._known_alarm_records: dict[str, bytes] = {}
+        self._alarm_time_raw: bytes | None = None
+        self._last_alarm_sync: float | None = None
+        self._alarm_resync: asyncio.Task[None] | None = None
+        # 読み出しは _alarm_data/_alarm_done を共有する。読み替え書き戻しの単位でも
+        # あるので、アラーム操作はまるごと直列化する。
+        self._alarm_lock = asyncio.Lock()
         self._last_history_sync: float | None = None
 
     @property
@@ -376,6 +387,9 @@ class PavlokConnection:
         self.hass.loop.call_soon_threadsafe(self._mark_disconnected)
 
     def _mark_disconnected(self) -> None:
+        # 手元の一覧は「切れている間に公式アプリが書き換えていないこと」を保証しない。
+        # 古い表を残すと、次アラームの日付を他人のレコードの曜日で決めてしまう。
+        self._known_alarm_records = {}
         if self.data["connected"]:
             self.data["connected"] = False
             self._publish()
@@ -600,7 +614,7 @@ class PavlokConnection:
         self._publish()
 
     def _alarm_time_notify(self, _: Any, payload: bytearray) -> None:
-        """Decode the firmware's next-alarm clock.
+        """Store the firmware's next-alarm clock and date it.
 
         The payload carries a time of day only, not a date::
 
@@ -612,8 +626,59 @@ class PavlokConnection:
         matters: it selects the record to consult.
         """
         raw = bytes(payload)
+        # 通知が来る＝次アラームが変わった＝直前のものが鳴り終わった、が主な経路。
+        changed = self._alarm_time_raw is not None and raw != self._alarm_time_raw
+        self._alarm_time_raw = raw
+        self.hass.loop.call_soon_threadsafe(self._handle_alarm_time, changed)
+
+    def _handle_alarm_time(self, changed: bool) -> None:
+        """Date the new next-alarm time, and re-read the list when it moved on."""
+        self._recompute_next_alarm()
+        if changed:
+            self._refresh_alarms_after_change()
+
+    def _refresh_alarms_after_change(self) -> None:
+        """Re-read the alarm list once the device has moved to a different alarm.
+
+        The firmware disarms a one-shot by clearing its enable bit, and says nothing
+        about it beyond publishing the next alarm.  Reading the list here is what
+        turns the wake switch off shortly after it rings, instead of leaving it on
+        until the next reconnection.
+        """
+        if not self.data["connected"]:
+            return
+        if (
+            self._last_alarm_sync is not None
+            and monotonic() - self._last_alarm_sync < _ALARM_RESYNC_QUIET
+        ):
+            # 自分で書いた直後の通知。読み直しても今書いたものが返るだけ。
+            return
+        if self._alarm_resync and not self._alarm_resync.done():
+            return
+        self._alarm_resync = self.hass.async_create_task(self._async_resync_alarms())
+
+    async def _async_resync_alarms(self) -> None:
+        """Refresh the alarm list in the background, never surfacing read failures."""
+        try:
+            await self.async_refresh_alarms()
+        except Exception:  # noqa: BLE001 - a background read must not raise
+            _LOGGER.debug("Pavlok alarm re-read after a firing failed", exc_info=True)
+
+    def _recompute_next_alarm(self) -> None:
+        """Date the stored next-alarm time against the records held right now.
+
+        This has to be repeatable, not a one-shot decode of the notification: a
+        fresh connection reads this characteristic *before* the alarm list, so the
+        first attempt resolves the alarm id against the previous session's records.
+        Where the app had meanwhile replaced the alarms, that dated a one-shot
+        alarm to the old record's weekday — observed 2026-08-05 as "next Tuesday"
+        for an alarm due the same evening.
+        """
+        raw = self._alarm_time_raw
+        if raw is None:
+            return
         if len(raw) < 3 or not any(raw):
-            self.hass.loop.call_soon_threadsafe(self._set_value, "next_alarm", None)
+            self._set_value("next_alarm", None)
             return
         try:
             second, minute, hour = ((b >> 4) * 10 + (b & 0x0F) for b in raw[:3])
@@ -632,9 +697,7 @@ class PavlokConnection:
             # マスクが取れなければ曜日で絞らない（最初に来る時刻を採る）
             if days and not days & (1 << ((candidate.weekday() + 1) % 7)):
                 continue
-            self.hass.loop.call_soon_threadsafe(
-                self._set_value, "next_alarm", candidate
-            )
+            self._set_value("next_alarm", candidate)
             return
         _LOGGER.debug("No upcoming Pavlok alarm matched payload: %s", raw.hex())
 
@@ -797,6 +860,7 @@ class PavlokConnection:
             # 区別できないため、書き込み前に何度か読み直して同じ結果になることを見る。
             return b""
         finally:
+            self._last_alarm_sync = monotonic()
             self._alarm_done = None
             if self._alarm_setter:
                 self._alarm_setter.cancel()
@@ -921,18 +985,40 @@ class PavlokConnection:
         for offset in range(0, len(message), 20):
             await self._write(CHR_AWRITE, message[offset : offset + 20])
         await self._write(CHR_ACTRL, _actrl(ACTRL_COMMIT))
+        self._last_alarm_sync = monotonic()
         self._known_alarm_records = dict(records)
         self.data["alarms"] = self._describe_alarms(records)
+        self._sync_wake_from_records(records)
+        self._recompute_next_alarm()
         self._publish()
 
     async def async_set_alarm(self, values: dict[str, Any]) -> None:
         """Append one alarm after successfully reading and retaining existing entries."""
-        records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
-        alarm_id = str(
-            max((int(item[0]) for item in records if item[0].isdigit()), default=-1) + 1
-        )
-        records.append((alarm_id, self._build_alarm_record(values, alarm_id)))
-        await self._async_write_alarm_records(records)
+        async with self._alarm_lock:
+            records = self._parse_alarm_document(
+                await self._async_read_alarms_confirmed()
+            )
+            alarm_id = str(self._next_alarm_id(records))
+            records.append((alarm_id, self._build_alarm_record(values, alarm_id)))
+            await self._async_write_alarm_records(records)
+
+    @staticmethod
+    def _next_alarm_id(records: list[tuple[str, bytes]]) -> int:
+        """Pick the next free alarm id, counting up like the official app does.
+
+        The reserved alarm sits at the top of the range, so it must not be counted:
+        one more than 65535 does not fit the u16 ID field, and every later write
+        would fail once the wake switch had been used.
+        """
+        used = {
+            int(record_id)
+            for record_id, _ in records
+            if record_id.isdigit() and record_id != RESERVED_ALARM_ID
+        }
+        candidate = max(used, default=-1) + 1
+        if candidate >= int(RESERVED_ALARM_ID):
+            raise HomeAssistantError("No free alarm id left on the device")
+        return candidate
 
     @staticmethod
     def _describe_alarms(records: list[tuple[str, bytes]]) -> list[dict]:
@@ -941,73 +1027,125 @@ class PavlokConnection:
 
     async def async_refresh_alarms(self) -> None:
         """Read and expose on-device alarm IDs without rewriting anything."""
+        async with self._alarm_lock:
+            await self._async_refresh_alarms_locked()
+
+    async def _async_refresh_alarms_locked(self) -> None:
         records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
         self._known_alarm_records = dict(records)
         self.data["alarms"] = self._describe_alarms(records)
+        self._sync_wake_from_records(records)
+        # 日付は曜日マスク頼みなので、表が入れ替わったら次アラームを引き直す。
+        self._recompute_next_alarm()
         self._publish()
 
     async def async_delete_alarm(self, alarm_id: str) -> None:
         """Delete one record while retaining all remaining raw device records."""
-        records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
-        remaining = [
-            (record_id, raw) for record_id, raw in records if record_id != str(alarm_id)
-        ]
-        if len(remaining) == len(records):
-            raise HomeAssistantError(f"Alarm {alarm_id} does not exist")
-        await self._async_write_alarm_records(remaining)
+        async with self._alarm_lock:
+            records = self._parse_alarm_document(
+                await self._async_read_alarms_confirmed()
+            )
+            remaining = [
+                (record_id, raw)
+                for record_id, raw in records
+                if record_id != str(alarm_id)
+            ]
+            if len(remaining) == len(records):
+                raise HomeAssistantError(f"Alarm {alarm_id} does not exist")
+            await self._async_write_alarm_records(remaining)
 
     async def async_set_wake(
         self, *, wake_time: dt_time | None = None, enabled: bool | None = None
     ) -> None:
-        """Replace the one alarm reserved for the time/switch wake controls."""
+        """Replace the one alarm reserved for the time/switch wake controls.
+
+        The reserved alarm is a one-shot: it fires at the next occurrence of the set
+        time and does not repeat.  Turning the switch on again arms it for the next
+        day.
+        """
         if wake_time is not None:
             self.data["wake_time"] = wake_time
         if enabled is not None:
             self.data["wake_enabled"] = enabled
         wake_time = self.data.get("wake_time", dt_time(7, 0))
         wake_enabled = bool(self.data.get("wake_enabled", False))
-        records = self._parse_alarm_document(await self._async_read_alarms_confirmed())
-        reserved_id: str | None = None
-        retained: list[tuple[str, bytes]] = []
-        for record_id, raw in records:
-            fields = self._split_tlvs(self._split_tlvs(raw)[0][1])
-            name = next(
+        async with self._alarm_lock:
+            records = self._parse_alarm_document(
+                await self._async_read_alarms_confirmed()
+            )
+            retained = [
+                (record_id, raw)
+                for record_id, raw in records
+                if not self._is_reserved_alarm(record_id, raw)
+            ]
+            retained.append(
                 (
-                    value.decode(errors="replace")
-                    for tag, value, _ in fields
-                    if tag == "NM"
-                ),
-                "",
+                    RESERVED_ALARM_ID,
+                    self._build_alarm_record(
+                        {
+                            "time": wake_time,
+                            # 曜日なし＝一発アラーム。次に来るその時刻に一度だけ鳴る。
+                            # 毎日繰り返したいなら pavlok.set_alarm に days を渡す。
+                            "days": [],
+                            "name": RESERVED_ALARM_NAME,
+                            "enabled": wake_enabled,
+                            "vibe": True,
+                            "vibe_intensity": int(self.data.get("vibe_intensity", 100)),
+                            "vibe_count": int(self.data.get("vibe_count", 1)),
+                            "beep": False,
+                            "zap": False,
+                            "unlock": "none",
+                        },
+                        RESERVED_ALARM_ID,
+                    ),
+                )
             )
-            if name == "Home Assistant Wake":
-                reserved_id = record_id
-            else:
-                retained.append((record_id, raw))
-        alarm_id = reserved_id or str(
-            max((int(item[0]) for item in records if item[0].isdigit()), default=-1) + 1
-        )
-        retained.append(
-            (
-                alarm_id,
-                self._build_alarm_record(
-                    {
-                        "time": wake_time,
-                        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
-                        "name": "Home Assistant Wake",
-                        "enabled": wake_enabled,
-                        "vibe": True,
-                        "vibe_intensity": int(self.data.get("vibe_intensity", 100)),
-                        "vibe_count": int(self.data.get("vibe_count", 1)),
-                        "beep": False,
-                        "zap": False,
-                        "unlock": "none",
-                    },
-                    alarm_id,
-                ),
-            )
-        )
-        await self._async_write_alarm_records(retained)
+            await self._async_write_alarm_records(retained)
         self._publish()
+
+    def _is_reserved_alarm(self, record_id: str, raw: bytes) -> bool:
+        """Whether a stored record is the one the wake controls own.
+
+        The id is what identifies it.  The name is also accepted so that an alarm
+        written by an older version, which allocated an ordinary id, is adopted and
+        moved rather than left behind as a duplicate.
+        """
+        return record_id == RESERVED_ALARM_ID or self._record_name(raw) == (
+            RESERVED_ALARM_NAME
+        )
+
+    @staticmethod
+    def _record_name(raw: bytes) -> str:
+        """Read an alarm record's AN (name) tag, or "" when it has none."""
+        roots = PavlokConnection._split_tlvs(raw)
+        if not roots:
+            return ""
+        for tag, value, _ in PavlokConnection._split_tlvs(roots[0][1]):
+            if tag == "AN":
+                return value.decode("utf-8", errors="replace")
+        return ""
+
+    def _sync_wake_from_records(self, records: list[tuple[str, bytes]]) -> None:
+        """Take the wake switch and time from the device's own copy of the alarm.
+
+        The firmware clears an alarm's enable bit once a one-shot has rung (measured
+        2026-08-05: the record and its time stay, only bit7 of TM drops), so reading
+        the record back is what lets the switch fall to off by itself after it fires.
+        A missing record means the alarm is not armed; the time is then left alone so
+        that a time chosen before arming survives.
+        """
+        for record_id, raw in records:
+            if not self._is_reserved_alarm(record_id, raw):
+                continue
+            fields = parse_alarm_record(raw)
+            self.data["wake_enabled"] = bool(fields.get("enabled"))
+            try:
+                self.data["wake_time"] = dt_time.fromisoformat(fields["time"])
+                self.data["wake_synced"] = True
+            except (KeyError, ValueError):
+                _LOGGER.debug("Reserved Pavlok alarm has no readable time")
+            return
+        self.data["wake_enabled"] = False
 
     def _async_sync_history_soon(self, *, force: bool) -> None:
         """Kick off a history read in the background.
