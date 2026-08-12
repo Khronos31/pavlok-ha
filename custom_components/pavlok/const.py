@@ -326,6 +326,12 @@ def find_sleep_records(body: bytes):
 ACTRL_READ = 0x06
 ACTRL_WRITE_BEGIN = 0x01
 ACTRL_COMMIT = 0x00
+# The ringing-alarm screen sends two short A-Ctrl actions that carry no profile
+# name (captured 2026-08-12, verified against the official app): stop dismisses
+# the ringing alarm, snooze delays it. The app follows a stop with a full alarm
+# re-write to re-arm a repeating alarm.
+ACTRL_STOP = bytes([0x02, 0x00])
+ACTRL_SNOOZE = bytes([0x03, 0x01])
 
 AWRITE_OK = bytes.fromhex("00000000")
 AWRITE_REJECT = bytes.fromhex("02000000")  # CRC mismatch / malformed

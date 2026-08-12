@@ -24,6 +24,12 @@ async def async_setup_entry(
             PavlokStimulusButton(manager, entry, STIM_VIBE),
             PavlokStimulusButton(manager, entry, STIM_BEEP),
             PavlokStimulusButton(manager, entry, STIM_ZAP),
+            PavlokAlarmButton(
+                manager, entry, "stop_alarm", "Stop alarm", "async_stop_alarm"
+            ),
+            PavlokAlarmButton(
+                manager, entry, "snooze_alarm", "Snooze alarm", "async_snooze_alarm"
+            ),
         ]
     )
 
@@ -49,3 +55,22 @@ class PavlokStimulusButton(PavlokEntity, ButtonEntity):
             ),
             self.manager.data.get(f"{self._kind}_count", 1),
         )
+
+
+class PavlokAlarmButton(PavlokEntity, ButtonEntity):
+    """Dismiss or snooze a ringing alarm, mirroring the app's alarm screen."""
+
+    def __init__(
+        self,
+        manager: PavlokConnection,
+        entry: ConfigEntry,
+        key: str,
+        name: str,
+        action: str,
+    ) -> None:
+        super().__init__(manager, entry, key)
+        self._attr_name = name
+        self._press = getattr(manager, action)
+
+    async def async_press(self) -> None:
+        await self._press()

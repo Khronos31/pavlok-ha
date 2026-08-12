@@ -36,6 +36,8 @@ from homeassistant.util import dt as dt_util
 from .const import (
     ACTRL_COMMIT,
     ACTRL_READ,
+    ACTRL_SNOOZE,
+    ACTRL_STOP,
     ACTRL_WRITE_BEGIN,
     ALARM_ENABLED_BIT,
     ALARM_PROFILE,
@@ -461,6 +463,14 @@ class PavlokConnection:
             kind
         ]
         await self._write(characteristic, stimulus_bytes(kind, intensity, count))
+
+    async def async_stop_alarm(self) -> None:
+        """Dismiss a currently ringing alarm, the same as the app's stop button."""
+        await self._write(CHR_ACTRL, ACTRL_STOP)
+
+    async def async_snooze_alarm(self) -> None:
+        """Snooze a currently ringing alarm, the same as the app's snooze button."""
+        await self._write(CHR_ACTRL, ACTRL_SNOOZE)
 
     async def async_assign_button(self, slot: int, action: str) -> None:
         """Write an optimistic physical-button assignment."""
