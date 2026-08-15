@@ -57,7 +57,7 @@ For that reason:
 ## Installation (HACS)
 
 1. HACS → Integrations → ⋮ → Custom repositories → add
-   `https://github.com/Khronos31/pavlok-ha` as an *Integration*.
+   `https://github.com/Khronos31/home-assistant-pavlok` as an *Integration*.
 2. Install **Pavlok**, restart Home Assistant.
 3. The device should be discovered automatically (advertised name
    `Pavlok-3-XXXX`). Otherwise add it via *Settings → Devices & Services → Add

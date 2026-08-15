@@ -16,10 +16,10 @@
   "dependencies": [
     "bluetooth_adapters"
   ],
-  "documentation": "https://github.com/Khronos31/pavlok-ha",
+  "documentation": "https://github.com/Khronos31/home-assistant-pavlok",
   "integration_type": "device",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/Khronos31/pavlok-ha/issues",
+  "issue_tracker": "https://github.com/Khronos31/home-assistant-pavlok/issues",
   "requirements": [
     "bleak-retry-connector>=3.5.0"
   ],
